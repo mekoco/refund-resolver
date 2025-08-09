@@ -21,14 +21,22 @@ type UpdateTypeDataPayload = Partial<Pick<RefundDetail, 'returnTrackings' | 'acc
 
 type PageParams = { page?: number; limit?: number };
 
-function withQuery(url: string, params?: Record<string, string | number | boolean | undefined>) {
+function withQuery(url: string, params?: Record<string, string | number | boolean | Date | undefined>) {
   if (!params) return url;
   const q = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== null) q.set(k, String(v));
+    if (v !== undefined && v !== null) {
+      const value = v instanceof Date ? v.toISOString() : String(v);
+      q.set(k, value);
+    }
   });
   const qs = q.toString();
   return qs ? `${url}?${qs}` : url;
+}
+
+function toIsoOrString(v?: Date | string): string | undefined {
+  if (v === undefined) return undefined;
+  return v instanceof Date ? v.toISOString() : v;
 }
 
 export const api = {
@@ -176,28 +184,48 @@ export const api = {
   },
 
   // Reports
-  async refundSummary(): Promise<{ success: boolean; totalAmount: number; byType: Record<string, number> }> {
-    const response = await fetch(`${API_BASE_URL}/reports/refund-summary`);
+  async refundSummary(params?: { startDate?: Date | string; endDate?: Date | string; limit?: number }): Promise<{ success: boolean; totalAmount: number; byType: Record<string, number> }> {
+    const response = await fetch(withQuery(`${API_BASE_URL}/reports/refund-summary`, {
+      startDate: toIsoOrString(params?.startDate),
+      endDate: toIsoOrString(params?.endDate),
+      limit: params?.limit,
+    }));
     if (!response.ok) throw new Error('Failed to fetch refund summary');
     return response.json();
   },
-  async accountingStatus(): Promise<{ success: boolean; statusTotals: Record<string, { amount: number; count: number }> }> {
-    const response = await fetch(`${API_BASE_URL}/reports/accounting-status`);
+  async accountingStatus(params?: { startDate?: Date | string; endDate?: Date | string; limit?: number }): Promise<{ success: boolean; statusTotals: Record<string, { amount: number; count: number }> }> {
+    const response = await fetch(withQuery(`${API_BASE_URL}/reports/accounting-status`, {
+      startDate: toIsoOrString(params?.startDate),
+      endDate: toIsoOrString(params?.endDate),
+      limit: params?.limit,
+    }));
     if (!response.ok) throw new Error('Failed to fetch accounting status');
     return response.json();
   },
-  async staffErrors(): Promise<{ success: boolean; byStaff: Record<string, { count: number; totalVariance: number }> }> {
-    const response = await fetch(`${API_BASE_URL}/reports/staff-errors`);
+  async staffErrors(params?: { startDate?: Date | string; endDate?: Date | string; limit?: number }): Promise<{ success: boolean; byStaff: Record<string, { count: number; totalVariance: number }> }> {
+    const response = await fetch(withQuery(`${API_BASE_URL}/reports/staff-errors`, {
+      startDate: toIsoOrString(params?.startDate),
+      endDate: toIsoOrString(params?.endDate),
+      limit: params?.limit,
+    }));
     if (!response.ok) throw new Error('Failed to fetch staff errors');
     return response.json();
   },
-  async defectiveProducts(): Promise<{ success: boolean; count: number; items: DefectiveProductItem[] }> {
-    const response = await fetch(`${API_BASE_URL}/reports/defective-products`);
+  async defectiveProducts(params?: { startDate?: Date | string; endDate?: Date | string; limit?: number }): Promise<{ success: boolean; count: number; items: DefectiveProductItem[] }> {
+    const response = await fetch(withQuery(`${API_BASE_URL}/reports/defective-products`, {
+      startDate: toIsoOrString(params?.startDate),
+      endDate: toIsoOrString(params?.endDate),
+      limit: params?.limit,
+    }));
     if (!response.ok) throw new Error('Failed to fetch defective products');
     return response.json();
   },
-  async financialImpact(): Promise<{ success: boolean; totals: { totalRefunds: number; totalAccounted: number; recoveryRate: number } }> {
-    const response = await fetch(`${API_BASE_URL}/reports/financial-impact`);
+  async financialImpact(params?: { startDate?: Date | string; endDate?: Date | string; limit?: number }): Promise<{ success: boolean; totals: { totalRefunds: number; totalAccounted: number; recoveryRate: number } }> {
+    const response = await fetch(withQuery(`${API_BASE_URL}/reports/financial-impact`, {
+      startDate: toIsoOrString(params?.startDate),
+      endDate: toIsoOrString(params?.endDate),
+      limit: params?.limit,
+    }));
     if (!response.ok) throw new Error('Failed to fetch financial impact');
     return response.json();
   },

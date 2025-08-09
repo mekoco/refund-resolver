@@ -13,6 +13,7 @@ interface DefectiveProductItem {
 
 export default function ReportsPage() {
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<{ totalAmount: number; byType: Record<string, number> } | null>(null);
   const [accounting, setAccounting] = useState<Record<string, { amount: number; count: number }> | null>(null);
   const [staff, setStaff] = useState<Record<string, { count: number; totalVariance: number }> | null>(null);
@@ -21,19 +22,27 @@ export default function ReportsPage() {
 
   const load = async () => {
     setLoading(true);
-    const [s, a, st, d, f] = await Promise.all([
-      api.refundSummary(),
-      api.accountingStatus(),
-      api.staffErrors(),
-      api.defectiveProducts(),
-      api.financialImpact(),
-    ]);
-    setSummary({ totalAmount: s.totalAmount, byType: s.byType });
-    setAccounting(a.statusTotals);
-    setStaff(st.byStaff);
-    setDefects(d.items);
-    setImpact(f.totals);
-    setLoading(false);
+    setError(null);
+    try {
+      const end = new Date();
+      const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const [s, a, st, d, f] = await Promise.all([
+        api.refundSummary({ startDate: start, endDate: end }),
+        api.accountingStatus({ startDate: start, endDate: end }),
+        api.staffErrors({ startDate: start, endDate: end }),
+        api.defectiveProducts({ startDate: start, endDate: end }),
+        api.financialImpact({ startDate: start, endDate: end }),
+      ]);
+      setSummary({ totalAmount: s.totalAmount, byType: s.byType });
+      setAccounting(a.statusTotals);
+      setStaff(st.byStaff);
+      setDefects(d.items);
+      setImpact(f.totals);
+    } catch (e: unknown) {
+      setError('Failed to load reports. Please adjust date range or try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -45,6 +54,14 @@ export default function ReportsPage() {
           <h1 className="text-2xl font-bold">Reports</h1>
           <p className="text-gray-600">Refund tracking dashboard</p>
         </div>
+
+        {error && (
+          <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded">{error}</div>
+        )}
+
+        {loading && (
+          <div className="text-gray-500">Loading reports…</div>
+        )}
 
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-white rounded-lg shadow p-6">
