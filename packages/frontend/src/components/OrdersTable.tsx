@@ -59,6 +59,9 @@ export default function OrdersTable({ orders }: OrdersTableProps) {
               Revenue
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Buyer Refund
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
               Profit/Loss
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -104,6 +107,9 @@ export default function OrdersTable({ orders }: OrdersTableProps) {
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                 {formatCurrency(order.orderRevenue)}
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                {formatCurrency(order.buyerRefundAmount)}
               </td>
               <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium ${getProfitColor(order.profitLoss)}`}>
                 {formatCurrency(order.profitLoss)}

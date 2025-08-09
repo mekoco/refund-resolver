@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { seedOrderDatabase } from './services/seedOrderData';
+// import { seedOrderDatabase } from './services/seedOrderData';
 import ordersRouter from './routes/orders';
 import refundsRouter from './routes/refunds';
 import returnsRouter from './routes/returns';
@@ -39,7 +39,7 @@ app.use('/api/reports', reportsRouter);
 
 const startServer = async () => {
   try {
-    await seedOrderDatabase();
+    // await seedOrderDatabase();
     
     app.listen(PORT, () => {
       console.log(`Backend server running on http://localhost:${PORT}`);

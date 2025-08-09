@@ -7,7 +7,9 @@
     "dev": "nodemon --exec ts-node src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "seed:orders": "ts-node src/scripts/seedOrders.ts"
+    "clear:firestore": "ts-node src/scripts/clearFirestore.ts",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts"
   },
   "keywords": [],
   "author": "",
@@ -16,9 +18,12 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "^24.2.0",
+    "axios": "^1.7.4",
+    "form-data": "^4.0.0",
     "nodemon": "^3.1.10",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^2.0.5"
   },
   "dependencies": {
     "@types/multer": "^2.0.0",

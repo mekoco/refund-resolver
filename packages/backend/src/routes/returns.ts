@@ -36,6 +36,7 @@ router.get('/', async (req: Request, res: Response) => {
 
     return res.status(400).json({ success: false, error: 'Cursor is required for page > 1. Use nextCursor from the previous response.', code: 'CURSOR_REQUIRED' });
   } catch (e) {
+    console.error('RETURNS_LIST_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to list returns', code: 'RETURNS_LIST_ERROR' });
   }
 });
@@ -46,6 +47,7 @@ router.get('/:id', async (req: Request, res: Response) => {
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'RETURN_NOT_FOUND' });
     res.json({ success: true, return: { id: doc.id, ...doc.data() } });
   } catch (e) {
+    console.error('RETURN_GET_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to get return', code: 'RETURN_GET_ERROR' });
   }
 });
@@ -76,6 +78,7 @@ router.get('/pending', async (req: Request, res: Response) => {
 
     return res.status(400).json({ success: false, error: 'Cursor is required for page > 1. Use nextCursor from the previous response.', code: 'CURSOR_REQUIRED' });
   } catch (e) {
+    console.error('RETURNS_PENDING_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to list pending returns', code: 'RETURNS_PENDING_ERROR' });
   }
 });
@@ -114,12 +117,11 @@ router.post('/initiate', async (req: Request, res: Response) => {
     const returnTracking: any = {
       id: newReturnId,
       returnInitiatedDate: now,
-      expectedReturnDate: expectedReturnDate || undefined,
-      actualReturnDate: undefined,
       returnStatus: ReturnStatus.PENDING,
       returnItems,
       totalReturnValue,
-      reason,
+      ...(expectedReturnDate ? { expectedReturnDate } : {}),
+      ...(typeof reason === 'string' && reason.length > 0 ? { reason } : {}),
     };
 
     const updatedReturnTrackings = Array.isArray(rd.returnTrackings) ? [...rd.returnTrackings, returnTracking] : [returnTracking];
@@ -139,6 +141,7 @@ router.post('/initiate', async (req: Request, res: Response) => {
 
     res.json({ success: true, id: newReturnId });
   } catch (e) {
+    console.error('RETURN_INITIATE_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to initiate return', code: 'RETURN_INITIATE_ERROR' });
   }
 });
@@ -177,6 +180,7 @@ async function updateReturnStatus(req: Request, res: Response, status: ReturnSta
 
     res.json({ success: true });
   } catch (e) {
+    console.error('RETURN_STATUS_UPDATE_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to update return status', code: 'RETURN_STATUS_UPDATE_ERROR' });
   }
 }
