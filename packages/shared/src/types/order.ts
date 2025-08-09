@@ -1,3 +1,5 @@
+import { RefundAccounting } from '../types/refund';
+
 export interface OrderItem {
   merchantSKU: string;
   salesVolume: number;
@@ -22,6 +24,7 @@ export interface Order {
   shippingFeePaidBySeller: number;
   marketingFees: number;
   buyerRefundAmount: number;
+  refundAccount?: RefundAccounting; // Embedded snapshot for convenience
   otherPlatformFees: number;
   orderTime: Date | null;
   confirmTime: Date | null;
