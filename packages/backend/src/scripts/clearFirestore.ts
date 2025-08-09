@@ -68,6 +68,10 @@ async function clearAllCollections() {
 }
 
 if (require.main === module) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('Refusing to clear Firestore in production environment.');
+    process.exit(1);
+  }
   clearAllCollections().then(() => process.exit(0));
 }
 
