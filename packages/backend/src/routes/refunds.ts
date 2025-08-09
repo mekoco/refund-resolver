@@ -50,15 +50,26 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
-const initiateSchema = z.object({
-  orderId: z.string().min(1),
-  refundAmount: z.number(),
-  refundDate: z.coerce.date().optional(),
-  refundType: z.nativeEnum(RefundType).optional(),
-  status: z.nativeEnum(RefundStatus).optional(),
-  accountingStatus: z.nativeEnum(AccountingStatus).optional(),
-  createdBy: z.string().min(1).optional(),
-});
+const initiateSchema = z
+  .object({
+    orderId: z.string().min(1),
+    refundAmount: z.number(),
+    refundDate: z.coerce.date().optional(),
+    refundType: z.nativeEnum(RefundType).optional(),
+    status: z.nativeEnum(RefundStatus).optional(),
+    accountingStatus: z.nativeEnum(AccountingStatus).optional(),
+    createdBy: z.string().min(1).optional(),
+  })
+  .superRefine((val, ctx) => {
+    const type = val.refundType ?? RefundType.OTHERS;
+    if (val.refundAmount < 0 && type !== RefundType.OTHERS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Negative refundAmount is only allowed for refundType=OTHERS (corrections)',
+        path: ['refundAmount'],
+      });
+    }
+  });
 
 router.post('/initiate', async (req: Request, res: Response) => {
   try {
@@ -92,12 +103,23 @@ const splitSchema = z.object({
   refundId: z.string().min(1),
   splits: z
     .array(
-      z.object({
-        refundAmount: z.number(),
-        refundType: z.nativeEnum(RefundType).optional(),
-        status: z.nativeEnum(RefundStatus).optional(),
-        accountingStatus: z.nativeEnum(AccountingStatus).optional(),
-      })
+      z
+        .object({
+          refundAmount: z.number(),
+          refundType: z.nativeEnum(RefundType).optional(),
+          status: z.nativeEnum(RefundStatus).optional(),
+          accountingStatus: z.nativeEnum(AccountingStatus).optional(),
+        })
+        .superRefine((val, ctx) => {
+          const type = val.refundType ?? RefundType.OTHERS;
+          if (val.refundAmount < 0 && type !== RefundType.OTHERS) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'Negative refundAmount in split is only allowed for refundType=OTHERS (corrections)',
+              path: ['refundAmount'],
+            });
+          }
+        })
     )
     .min(1),
 });
@@ -215,13 +237,27 @@ const bulkSchema = z.object({
         id: z.string().min(1),
         // Optional last known update time for optimistic concurrency
         lastUpdatedAt: z.coerce.date().optional(),
-        changes: z.object({
-          refundAmount: z.number().optional(),
-          refundType: z.nativeEnum(RefundType).optional(),
-          status: z.nativeEnum(RefundStatus).optional(),
-          accountingStatus: z.nativeEnum(AccountingStatus).optional(),
-          returnTrackings: z.array(returnTrackingSchema).optional(),
-        }).strict(),
+        changes: z
+          .object({
+            refundAmount: z.number().optional(),
+            refundType: z.nativeEnum(RefundType).optional(),
+            status: z.nativeEnum(RefundStatus).optional(),
+            accountingStatus: z.nativeEnum(AccountingStatus).optional(),
+            returnTrackings: z.array(returnTrackingSchema).optional(),
+          })
+          .strict()
+          .superRefine((val, ctx) => {
+            // If both refundAmount and refundType present (or refundType missing but amount negative), enforce rule
+            const amt = val.refundAmount;
+            const type = val.refundType ?? RefundType.OTHERS;
+            if (typeof amt === 'number' && amt < 0 && type !== RefundType.OTHERS) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: 'Negative refundAmount is only allowed when refundType=OTHERS',
+                path: ['refundAmount'],
+              });
+            }
+          }),
       })
     )
     .min(1),
