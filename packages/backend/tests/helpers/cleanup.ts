@@ -20,7 +20,16 @@ export async function deleteOrderCascade(orderId: string) {
 }
 
 export async function deleteOrdersCascade(orderIds: string[]) {
-  for (const id of orderIds) {
-    await deleteOrderCascade(id);
-  }
+  const concurrency = 5;
+  const queue = [...orderIds];
+  const workers: Promise<void>[] = [];
+  const runWorker = async () => {
+    while (queue.length) {
+      const id = queue.shift();
+      if (!id) return;
+      await deleteOrderCascade(id);
+    }
+  };
+  for (let i = 0; i < concurrency; i++) workers.push(runWorker());
+  await Promise.all(workers);
 } 

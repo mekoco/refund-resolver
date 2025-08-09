@@ -51,20 +51,28 @@ describe('Workflow: bulk update then reconcile', () => {
     });
     refundB = b.data.refund.id;
 
-    const now = new Date().toISOString();
+    // Fetch current updatedAt timestamps for optimistic concurrency
+    const [ga, gb] = await Promise.all([
+      api.get(`/refunds/${refundA}`),
+      api.get(`/refunds/${refundB}`),
+    ]);
+    const aUpdatedAt: string | undefined = ga.data.refund?.updatedAt;
+    const bUpdatedAt: string | undefined = gb.data.refund?.updatedAt;
+
+    const nowIso = new Date().toISOString();
 
     const bulk = await api.post('/refunds/bulk-update', {
       updates: [
         {
           id: refundA,
-          lastUpdatedAt: now,
+          lastUpdatedAt: aUpdatedAt || nowIso,
           changes: {
             status: 'PROCESSING',
             returnTrackings: [
               {
                 id: `R-${refundA}`,
-                returnInitiatedDate: now,
-                expectedReturnDate: now,
+                returnInitiatedDate: nowIso,
+                expectedReturnDate: nowIso,
                 returnStatus: 'PENDING',
                 returnItems: [{ skuName: 'SKU-H', quantity: 3, unitPrice: 100, condition: 'GOOD' }],
                 totalReturnValue: 300,
@@ -74,14 +82,14 @@ describe('Workflow: bulk update then reconcile', () => {
         },
         {
           id: refundB,
-          lastUpdatedAt: now,
+          lastUpdatedAt: bUpdatedAt || nowIso,
           changes: {
             status: 'PROCESSING',
             returnTrackings: [
               {
                 id: `R-${refundB}`,
-                returnInitiatedDate: now,
-                expectedReturnDate: now,
+                returnInitiatedDate: nowIso,
+                expectedReturnDate: nowIso,
                 returnStatus: 'PENDING',
                 returnItems: [{ skuName: 'SKU-H', quantity: 4, unitPrice: 100, condition: 'GOOD' }],
                 totalReturnValue: 400,
