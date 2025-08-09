@@ -8,6 +8,7 @@ import returnsRouter from './routes/returns';
 import reconciliationRouter from './routes/reconciliation';
 import skusRouter from './routes/skus';
 import staffRouter from './routes/staff';
+import reportsRouter from './routes/reports';
 
 dotenv.config();
 
@@ -34,6 +35,7 @@ app.use('/api/returns', returnsRouter);
 app.use('/api/reconciliation', reconciliationRouter);
 app.use('/api/skus', skusRouter);
 app.use('/api/staff', staffRouter);
+app.use('/api/reports', reportsRouter);
 
 const startServer = async () => {
   try {
