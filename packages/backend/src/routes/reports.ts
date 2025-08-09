@@ -1,20 +1,28 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../config/firebase';
 import { RefundType, AccountingStatus, ReturnStatus } from '@packages/shared';
+import { z } from 'zod';
 
 const router = Router();
 
-const parseDate = (v: any) => (v ? new Date(String(v)) : undefined);
+const dateRangeSchema = z.object({
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
+  limit: z.coerce.number().int().min(1).max(2000).default(500),
+});
 
 router.get('/refund-summary', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate, limit } = req.query as any;
+    const { startDate, endDate, limit } = dateRangeSchema.parse(req.query);
+    if (!startDate && !endDate) {
+      return res.status(400).json({ success: false, error: 'Provide startDate or endDate to bound the query', code: 'DATE_RANGE_REQUIRED' });
+    }
+
     let query: FirebaseFirestore.Query = db.collection('refundDetails');
-    if (startDate) query = query.where('refundDate', '>=', parseDate(startDate));
-    if (endDate) query = query.where('refundDate', '<=', parseDate(endDate));
-    const max = Math.min(Number(limit) || 1000, 5000);
-    const snap = await query.limit(max).get();
-    const details = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    if (startDate) query = query.where('refundDate', '>=', startDate);
+    if (endDate) query = query.where('refundDate', '<=', endDate);
+    const snap = await query.limit(limit).get();
+    const details = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
 
     const totalAmount = details.reduce((s, d) => s + Number(d.refundAmount || 0), 0);
     const byType: Record<string, number> = {};
@@ -31,13 +39,16 @@ router.get('/refund-summary', async (req: Request, res: Response) => {
 
 router.get('/accounting-status', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate, limit } = req.query as any;
+    const { startDate, endDate, limit } = dateRangeSchema.parse(req.query);
+    if (!startDate && !endDate) {
+      return res.status(400).json({ success: false, error: 'Provide startDate or endDate to bound the query', code: 'DATE_RANGE_REQUIRED' });
+    }
+
     let query: FirebaseFirestore.Query = db.collection('orders');
-    if (startDate) query = query.where('orderTime', '>=', parseDate(startDate));
-    if (endDate) query = query.where('orderTime', '<=', parseDate(endDate));
-    const max = Math.min(Number(limit) || 1000, 5000);
-    const snap = await query.limit(max).get();
-    const orders = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    if (startDate) query = query.where('orderTime', '>=', startDate);
+    if (endDate) query = query.where('orderTime', '<=', endDate);
+    const snap = await query.limit(limit).get();
+    const orders = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
 
     const statusTotals: Record<string, { amount: number; count: number }> = {};
 
@@ -58,14 +69,16 @@ router.get('/accounting-status', async (req: Request, res: Response) => {
 
 router.get('/staff-errors', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate, limit } = req.query as any;
+    const { startDate, endDate, limit } = dateRangeSchema.parse(req.query);
+    if (!startDate && !endDate) {
+      return res.status(400).json({ success: false, error: 'Provide startDate or endDate to bound the query', code: 'DATE_RANGE_REQUIRED' });
+    }
     let query: FirebaseFirestore.Query = db.collection('refundReconciliations');
-    if (startDate) query = query.where('createdAt', '>=', parseDate(startDate));
-    if (endDate) query = query.where('createdAt', '<=', parseDate(endDate));
-    const max = Math.min(Number(limit) || 1000, 5000);
-    const snap = await query.limit(max).get();
+    if (startDate) query = query.where('createdAt', '>=', startDate);
+    if (endDate) query = query.where('createdAt', '<=', endDate);
+    const snap = await query.limit(limit).get();
 
-    const recs = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    const recs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
     const byStaff: Record<string, { count: number; totalVariance: number }> = {};
 
     for (const r of recs) {
@@ -84,15 +97,17 @@ router.get('/staff-errors', async (req: Request, res: Response) => {
 
 router.get('/defective-products', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate, limit } = req.query as any;
+    const { startDate, endDate, limit } = dateRangeSchema.parse(req.query);
+    if (!startDate && !endDate) {
+      return res.status(400).json({ success: false, error: 'Provide startDate or endDate to bound the query', code: 'DATE_RANGE_REQUIRED' });
+    }
     let query: FirebaseFirestore.Query = db.collection('refundDetails').where('refundType', '==', RefundType.DEFECTIVE_PRODUCTS);
-    if (startDate) query = query.where('refundDate', '>=', parseDate(startDate));
-    if (endDate) query = query.where('refundDate', '<=', parseDate(endDate));
-    const max = Math.min(Number(limit) || 1000, 5000);
-    const snap = await query.limit(max).get();
-    const details = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    if (startDate) query = query.where('refundDate', '>=', startDate);
+    if (endDate) query = query.where('refundDate', '<=', endDate);
+    const snap = await query.limit(limit).get();
+    const details = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
 
-    const items = details.flatMap(d => (Array.isArray(d.defectiveItems) ? d.defectiveItems : []).map((x: any) => ({
+    const items = details.flatMap((d) => (Array.isArray(d.defectiveItems) ? d.defectiveItems : []).map((x: any) => ({
       orderId: d.orderId,
       refundDetailId: d.id,
       ...x,
@@ -106,13 +121,15 @@ router.get('/defective-products', async (req: Request, res: Response) => {
 
 router.get('/financial-impact', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate, limit } = req.query as any;
+    const { startDate, endDate, limit } = dateRangeSchema.parse(req.query);
+    if (!startDate && !endDate) {
+      return res.status(400).json({ success: false, error: 'Provide startDate or endDate to bound the query', code: 'DATE_RANGE_REQUIRED' });
+    }
     let query: FirebaseFirestore.Query = db.collection('orders');
-    if (startDate) query = query.where('orderTime', '>=', parseDate(startDate));
-    if (endDate) query = query.where('orderTime', '<=', parseDate(endDate));
-    const max = Math.min(Number(limit) || 1000, 5000);
-    const ordersSnap = await query.limit(max).get();
-    const orders = ordersSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    if (startDate) query = query.where('orderTime', '>=', startDate);
+    if (endDate) query = query.where('orderTime', '<=', endDate);
+    const ordersSnap = await query.limit(limit).get();
+    const orders = ordersSnap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
 
     const totalRefunds = orders.reduce((s, o) => s + Number(o?.buyerRefundAmount || 0), 0);
     const totalAccounted = orders.reduce((s, o) => s + Number(o?.refundAccount?.accountedRefundAmount || 0), 0);
@@ -127,7 +144,7 @@ function inferOrderAccountingStatus(refundAccount: any): AccountingStatus {
   const details: any[] = Array.isArray(refundAccount?.refundDetails) ? refundAccount.refundDetails : [];
   if (details.length === 0) return AccountingStatus.UNACCOUNTED;
 
-  const hasLost = details.some(d => (d.returnTrackings || []).some((rt: any) => rt.returnStatus === ReturnStatus.LOST_BY_COURIER));
+  const hasLost = details.some((d) => (d.returnTrackings || []).some((rt: any) => rt.returnStatus === ReturnStatus.LOST_BY_COURIER));
   if (hasLost) return AccountingStatus.PARTIALLY_ACCOUNTED;
 
   const totalRefund = details.reduce((s, d) => s + Number(d.refundAmount || 0), 0);

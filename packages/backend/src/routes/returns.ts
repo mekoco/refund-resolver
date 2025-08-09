@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../config/firebase';
-import { ReturnItem, ReturnStatus } from '@packages/shared';
+import { ReturnItem, ReturnStatus, ItemCondition } from '@packages/shared';
 import { z } from 'zod';
 import { recomputeAndWriteOrderRefundSnapshot } from '../utils/snapshot';
 
@@ -34,13 +34,7 @@ router.get('/', async (req: Request, res: Response) => {
       return res.json({ success: true, count: returns.length, returns, page, limit, nextCursor });
     }
 
-    const prevSnap = await base.limit((page - 1) * limit).get();
-    if (prevSnap.empty) return res.json({ success: true, count: 0, returns: [], page, limit, nextCursor: null });
-    const lastPrevDoc = prevSnap.docs[prevSnap.docs.length - 1];
-    const snap = await base.startAfter(lastPrevDoc).limit(limit).get();
-    const returns = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    const nextCursor = returns.length === limit ? snap.docs[snap.docs.length - 1].id : null;
-    res.json({ success: true, count: returns.length, returns, page, limit, nextCursor });
+    return res.status(400).json({ success: false, error: 'Cursor is required for page > 1. Use nextCursor from the previous response.', code: 'CURSOR_REQUIRED' });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to list returns', code: 'RETURNS_LIST_ERROR' });
   }
@@ -80,14 +74,7 @@ router.get('/pending', async (req: Request, res: Response) => {
       return res.json({ success: true, count: items.length, items, page, limit, nextCursor });
     }
 
-    const prevSnap = await base.limit((page - 1) * limit).get();
-    if (prevSnap.empty) return res.json({ success: true, count: 0, items: [], page, limit, nextCursor: null });
-    const lastPrevDoc = prevSnap.docs[prevSnap.docs.length - 1];
-    const snap = await base.startAfter(lastPrevDoc).limit(limit).get();
-    const docs = snap.docs;
-    const items = docs.map((d) => ({ id: d.id, ...d.data() }));
-    const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
-    res.json({ success: true, count: items.length, items, page, limit, nextCursor });
+    return res.status(400).json({ success: false, error: 'Cursor is required for page > 1. Use nextCursor from the previous response.', code: 'CURSOR_REQUIRED' });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to list pending returns', code: 'RETURNS_PENDING_ERROR' });
   }
@@ -101,7 +88,7 @@ const initiateSchema = z.object({
         skuName: z.string().min(1),
         quantity: z.number().nonnegative(),
         unitPrice: z.number().nonnegative(),
-        condition: z.enum(['GOOD', 'DAMAGED', 'MISSING']),
+        condition: z.nativeEnum(ItemCondition),
         restockedDate: z.coerce.date().optional(),
         restockedBy: z.string().optional(),
       })
@@ -150,32 +137,19 @@ router.post('/initiate', async (req: Request, res: Response) => {
 
     await recomputeAndWriteOrderRefundSnapshot(rd.orderId);
 
-    res.status(201).json({ success: true, return: returnTracking });
-  } catch (e: any) {
-    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    res.json({ success: true, id: newReturnId });
+  } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to initiate return', code: 'RETURN_INITIATE_ERROR' });
   }
 });
 
-router.put('/:id/receive', async (req: Request, res: Response) => {
-  await updateReturnStatus(req, res, ReturnStatus.RECEIVED);
-});
-
-router.put('/:id/inspect', async (req: Request, res: Response) => {
-  await updateReturnStatus(req, res, ReturnStatus.INSPECTING);
-});
-
-router.put('/:id/restock', async (req: Request, res: Response) => {
-  await updateReturnStatus(req, res, ReturnStatus.RESTOCKED);
-});
-
-router.put('/:id/mark-lost-by-courier', async (req: Request, res: Response) => {
-  await updateReturnStatus(req, res, ReturnStatus.LOST_BY_COURIER);
-});
-
-router.put('/:id/mark-paid-by-courier', async (req: Request, res: Response) => {
-  await updateReturnStatus(req, res, ReturnStatus.PAID_BY_COURIER);
-});
+router.post('/:id/mark-in-transit', (req: Request, res: Response) => updateReturnStatus(req, res, ReturnStatus.IN_TRANSIT));
+router.post('/:id/mark-received', (req: Request, res: Response) => updateReturnStatus(req, res, ReturnStatus.RECEIVED));
+router.post('/:id/mark-inspecting', (req: Request, res: Response) => updateReturnStatus(req, res, ReturnStatus.INSPECTING));
+router.post('/:id/mark-restocked', (req: Request, res: Response) => updateReturnStatus(req, res, ReturnStatus.RESTOCKED));
+router.post('/:id/mark-discrepancy', (req: Request, res: Response) => updateReturnStatus(req, res, ReturnStatus.DISCREPANCY_FOUND));
+router.post('/:id/mark-lost', (req: Request, res: Response) => updateReturnStatus(req, res, ReturnStatus.LOST_BY_COURIER));
+router.post('/:id/mark-paid-by-courier', (req: Request, res: Response) => updateReturnStatus(req, res, ReturnStatus.PAID_BY_COURIER));
 
 async function updateReturnStatus(req: Request, res: Response, status: ReturnStatus) {
   try {

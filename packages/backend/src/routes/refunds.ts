@@ -34,13 +34,7 @@ router.get('/', async (req: Request, res: Response) => {
       return res.json({ success: true, count: refunds.length, refunds, page, limit, nextCursor });
     }
 
-    const prevSnap = await baseQuery.limit((page - 1) * limit).get();
-    if (prevSnap.empty) return res.json({ success: true, count: 0, refunds: [], page, limit, nextCursor: null });
-    const lastPrevDoc = prevSnap.docs[prevSnap.docs.length - 1];
-    const snap = await baseQuery.startAfter(lastPrevDoc).limit(limit).get();
-    const refunds = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    const nextCursor = refunds.length === limit ? snap.docs[snap.docs.length - 1].id : null;
-    res.json({ success: true, count: refunds.length, refunds, page, limit, nextCursor });
+    return res.status(400).json({ success: false, error: 'Cursor is required for page > 1. Use nextCursor from the previous response.', code: 'CURSOR_REQUIRED' });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to list refunds', code: 'REFUNDS_LIST_ERROR' });
   }
@@ -149,11 +143,6 @@ router.post('/split', async (req: Request, res: Response) => {
 
 const statusSchema = z.object({ status: z.nativeEnum(RefundStatus) });
 
-// auth middleware placeholder
-function authGuard() { /* no-op for now */ }
-
-authGuard();
-
 router.put('/:id/status', async (req: Request, res: Response) => {
   try {
     const { status } = statusSchema.parse(req.body);
@@ -224,6 +213,8 @@ const bulkSchema = z.object({
     .array(
       z.object({
         id: z.string().min(1),
+        // Optional last known update time for optimistic concurrency
+        lastUpdatedAt: z.coerce.date().optional(),
         changes: z.object({
           refundAmount: z.number().optional(),
           refundType: z.nativeEnum(RefundType).optional(),
@@ -241,51 +232,60 @@ router.post('/bulk-update', async (req: Request, res: Response) => {
     const { updates } = bulkSchema.parse(req.body);
     const col = db.collection('refundDetails');
 
-    // Pre-read docs to determine affected orders and avoid race with batch writes
+    // Pre-read docs to determine affected orders and check preconditions
     const preRead = await Promise.all(
       updates.map(async (u) => {
         const ref = col.doc(u.id);
         const doc = await ref.get();
-        return { ref, doc };
+        return { ref, doc, payload: u };
       })
     );
 
     const affectedOrderIds = new Set<string>();
-    for (const { doc } of preRead) {
-      if (doc.exists) {
+
+    // Use a transaction to enforce preconditions via update time match if provided
+    await db.runTransaction(async (tx) => {
+      const now = new Date();
+      for (const { ref, doc, payload } of preRead) {
+        if (!doc.exists) continue;
         const data = doc.data() as any;
         if (data?.orderId) affectedOrderIds.add(data.orderId);
+
+        // If client provided lastUpdatedAt, enforce optimistic concurrency
+        if (payload.lastUpdatedAt) {
+          const currentUpdatedAt = (data?.updatedAt as FirebaseFirestore.Timestamp)?.toDate?.() || data?.updatedAt;
+          const expected = new Date(payload.lastUpdatedAt);
+          if (!currentUpdatedAt || Math.abs(currentUpdatedAt.getTime() - expected.getTime()) > 1) {
+            throw new Error(`Conflict on ${ref.id}: document was modified by another process`);
+          }
+        }
+
+        tx.update(ref, { ...payload.changes, updatedAt: now });
       }
-    }
-
-    const batch = db.batch();
-    const now = new Date();
-    for (let i = 0; i < updates.length; i++) {
-      const { ref } = preRead[i];
-      const { changes } = updates[i];
-      batch.update(ref, { ...changes, updatedAt: now });
-    }
-
-    await batch.commit();
+    });
 
     await Promise.all(Array.from(affectedOrderIds).map((id) => recomputeAndWriteOrderRefundSnapshot(id)));
 
     res.json({ success: true, updated: updates.length });
   } catch (e: any) {
     if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    if (typeof e?.message === 'string' && e.message.startsWith('Conflict')) {
+      return res.status(409).json({ success: false, error: e.message, code: 'CONFLICT' });
+    }
     res.status(500).json({ success: false, error: 'Failed bulk update', code: 'REFUND_BULK_UPDATE_ERROR' });
   }
 });
 
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
-    const docRef = db.collection('refundDetails').doc(req.params.id);
-    const doc = await docRef.get();
-    if (doc.exists) {
-      const data = doc.data() as any;
-      await docRef.delete();
-      if (data?.orderId) await recomputeAndWriteOrderRefundSnapshot(data.orderId);
-    }
+    const ref = db.collection('refundDetails').doc(req.params.id);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
+
+    const data = doc.data() as any;
+    await ref.delete();
+    await recomputeAndWriteOrderRefundSnapshot(data.orderId);
+
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to delete refund', code: 'REFUND_DELETE_ERROR' });

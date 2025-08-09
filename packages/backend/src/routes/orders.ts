@@ -34,7 +34,7 @@ router.get('/', async (req: Request, res: Response) => {
     // Prefer cursor-based pagination when provided
     if (cursor) {
       const cursorDoc = await db.collection('orders').doc(cursor).get();
-      if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor' });
+      if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor', code: 'INVALID_CURSOR' });
       const snap = await baseQuery.startAfter(cursorDoc).limit(limit).get();
       const orders: Order[] = snap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
       const nextCursor = orders.length === limit ? snap.docs[snap.docs.length - 1].id : null;
@@ -49,22 +49,20 @@ router.get('/', async (req: Request, res: Response) => {
       return res.json({ success: true, count: orders.length, orders, page, limit, nextCursor });
     }
 
-    // For page > 1 without cursor, compute cursor by fetching the last doc of the previous page only
-    const prevSnap = await baseQuery.limit((page - 1) * limit).get();
-    if (prevSnap.empty) {
-      return res.json({ success: true, count: 0, orders: [], page, limit, nextCursor: null });
-    }
-    const lastPrevDoc = prevSnap.docs[prevSnap.docs.length - 1];
-    const snap = await baseQuery.startAfter(lastPrevDoc).limit(limit).get();
-    const orders: Order[] = snap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
-    const nextCursor = orders.length === limit ? snap.docs[snap.docs.length - 1].id : null;
-
-    res.json({ success: true, count: orders.length, orders, page, limit, nextCursor });
+    // Disallow inefficient page-based access without cursor
+    return res.status(400).json({ success: false, error: 'Cursor is required for page > 1. Use nextCursor from the previous response.', code: 'CURSOR_REQUIRED' });
   } catch (error) {
     console.error('Error fetching orders:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch orders', code: 'ORDERS_LIST_ERROR' });
   }
 });
+
+const refundAccountingSchema = z
+  .object({
+    refundDetails: z.array(z.any()).optional(),
+    accountedRefundAmount: z.number().nonnegative().default(0),
+  })
+  .strict();
 
 const orderSchema = z.object({
   id: z.any().optional(),
@@ -92,16 +90,16 @@ const orderSchema = z.object({
   shippingFeePaidBySeller: z.number(),
   marketingFees: z.number(),
   buyerRefundAmount: z.number(),
-  refundAccount: z.any().optional(),
+  refundAccount: refundAccountingSchema.optional(),
   otherPlatformFees: z.number(),
-  orderTime: z.any().nullable(),
-  confirmTime: z.any().nullable(),
-  releaseTime: z.any().nullable(),
-  updateTime: z.any().nullable(),
-  completedTime: z.any().nullable(),
+  orderTime: z.coerce.date().nullable(),
+  confirmTime: z.coerce.date().nullable(),
+  releaseTime: z.coerce.date().nullable(),
+  updateTime: z.coerce.date().nullable(),
+  completedTime: z.coerce.date().nullable(),
   orderStatus: z.string(),
-  createdAt: z.any().optional(),
-  updatedAt: z.any().optional(),
+  createdAt: z.coerce.date().optional(),
+  updatedAt: z.coerce.date().optional(),
 });
 
 router.post('/upload-excel', upload.single('file'), async (req: Request, res: Response) => {
