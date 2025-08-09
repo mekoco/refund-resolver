@@ -8,23 +8,22 @@ import { expectAmountsClose, expectAmountsNotClose } from '../helpers/assertions
 const unique = () => Math.random().toString(36).slice(2);
 
 /**
- * Scenario: Order fully reconciled, then buyerRefundAmount changes → previous fully-accounted state is voided
+ * Scenario: Order fully reconciled, then buyerRefundAmount decreases → fully-accounted state becomes partial until delta is reconciled
  * - Create order via Excel (buyerRefundAmount = 500)
  * - Create RefundDetail type PLATFORM_FEES (500)
  * - Reconcile as MATCHED with actualValue 500
- * - Verify accountedRefundAmount >= 500 and status is effectively FULLY_ACCOUNTED (by equality check)
- * - Upload Excel with increased buyerRefundAmount = 800
- * - System creates OTHERS RefundDetail for +300 (UNACCOUNTED)
- * - Snapshot recompute keeps accountedRefundAmount at ~500, but expected is now 800
- * - Assert order not fully accounted anymore (accountedRefundAmount < buyerRefundAmount) and delta detail exists
+ * - Verify accountedRefundAmount ~= 500 (FULLY_ACCOUNTED by equality)
+ * - Upload Excel with decreased buyerRefundAmount = 350
+ * - System creates OTHERS RefundDetail for -150 (UNACCOUNTED)
+ * - Snapshot recompute keeps accountedRefundAmount at ~500, expected is now 350
+ * - Assert mismatch (accountedRefundAmount != buyerRefundAmount)
  */
 
-describe('Voids fully-accounted state when order refund total changes', () => {
-  const orderId = `RECONVOID_${unique()}`;
+describe('Voids fully-accounted state when order refund total decreases', () => {
+  const orderId = `RECONVOID_DEC_${unique()}`;
   let refundId: string;
 
   beforeAll(async () => {
-    // Initial order upload: 500
     const buf = buildOrdersExcel([
       buildOrderRow({ orderId, buyerRefundAmount: 500, items: [] }),
     ]);
@@ -39,7 +38,6 @@ describe('Voids fully-accounted state when order refund total changes', () => {
   });
 
   it('creates initial refund and reconciles to matched', async () => {
-    // Create a refund detail equal to total
     const res = await api.post('/refunds/initiate', {
       orderId,
       refundAmount: 500,
@@ -65,25 +63,24 @@ describe('Voids fully-accounted state when order refund total changes', () => {
     expectAmountsClose(accounted, expected);
   });
 
-  it('increases order buyerRefundAmount via Excel and voids fully-accounted state', async () => {
-    // Increase order total to 800
+  it('decreases order buyerRefundAmount via Excel and voids fully-accounted state', async () => {
+    // Decrease order total to 350
     const buf = buildOrdersExcel([
-      buildOrderRow({ orderId, buyerRefundAmount: 800, items: [] }),
+      buildOrderRow({ orderId, buyerRefundAmount: 350, items: [] }),
     ]);
     const fd = new FormData();
     fd.append('file', buf, { filename: 'orders.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const res = await api.post('/orders/upload-excel', fd, { headers: fd.getHeaders() });
     expect(res.data.success).toBe(true);
 
-    // After upload, snapshot recompute should reflect mismatch
     const order = await api.get(`/orders/${orderId}`);
     expect(order.data.success).toBe(true);
     const accounted = Number(order.data.order?.refundAccount?.accountedRefundAmount || 0);
     const expected = Number(order.data.order?.buyerRefundAmount || 0);
 
-    // accounted should still be ~500 (no reconciliation yet for +300 detail)
+    // accounted should still be ~500 (no reconciliation yet for -150 detail)
     expect(accounted).toBeGreaterThanOrEqual(500);
-    expect(expected).toBe(800);
+    expect(expected).toBe(350);
     expectAmountsNotClose(accounted, expected);
   });
 }); 

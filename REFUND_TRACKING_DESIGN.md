@@ -541,6 +541,11 @@ Accounting is achieved when values across returns, courier payments, and write-o
 
 ## Post‑Reconciliation Changes: Voiding by Mismatch (Order Refund Amount Changes)
 
+### Summary
+- Preserve prior reconciliations; do not mutate or delete history
+- Create an OTHERS delta RefundDetail for any change in buyerRefundAmount (positive or negative)
+- Recompute the order snapshot; order becomes non‑fully‑accounted until the delta is reconciled
+
 When an order's `buyerRefundAmount` changes after the order has already been fully reconciled, the system must effectively void the order-level fully-accounted state. We do not delete or mutate historical reconciliation rows. Instead, we re-introduce a mismatch so the order transitions back to a non-fully-accounted state until new reconciliation actions are taken.
 
 ### Behavior
