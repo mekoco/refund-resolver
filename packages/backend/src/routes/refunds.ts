@@ -9,19 +9,31 @@ const router = Router();
 const listQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().optional(),
 });
 
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const { page, limit } = listQuerySchema.parse(req.query);
-    const offset = (page - 1) * limit;
+    const { page, limit, cursor } = listQuerySchema.parse(req.query);
 
     const baseQuery = db.collection('refundDetails').orderBy('updatedAt', 'desc');
+
+    if (cursor) {
+      const cursorDoc = await db.collection('refundDetails').doc(cursor).get();
+      if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor' });
+      const snap = await baseQuery.startAfter(cursorDoc).limit(limit).get();
+      const refunds = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const nextCursor = refunds.length === limit ? snap.docs[snap.docs.length - 1].id : null;
+      return res.json({ success: true, count: refunds.length, refunds, page, limit, nextCursor });
+    }
+
+    const offset = (page - 1) * limit;
     const snap = await baseQuery.limit(offset + limit).get();
     const docs = snap.docs.slice(offset, offset + limit);
 
     const refunds = docs.map((d) => ({ id: d.id, ...d.data() }));
-    res.json({ success: true, count: refunds.length, refunds, page, limit });
+    const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
+    res.json({ success: true, count: refunds.length, refunds, page, limit, nextCursor });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to list refunds' });
   }
@@ -71,7 +83,7 @@ router.post('/initiate', async (req: Request, res: Response) => {
     res.status(201).json({ success: true, refund: { id: doc.id, ...doc.data() } });
   } catch (e: any) {
     if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
-    res.status(500).json({ success: false, error: 'Failed to create refund' });
+    res.status(500).json({ success: false, error: 'Failed to initiate refund' });
   }
 });
 
@@ -130,6 +142,9 @@ router.post('/split', async (req: Request, res: Response) => {
 
 const statusSchema = z.object({ status: z.nativeEnum(RefundStatus) });
 
+// auth middleware placeholder
+function authGuard() { /* no-op for now */ }
+
 authGuard();
 
 router.put('/:id/status', async (req: Request, res: Response) => {
@@ -150,7 +165,12 @@ router.put('/:id/status', async (req: Request, res: Response) => {
   }
 });
 
-const typeDataSchema = z.record(z.string(), z.unknown());
+// Restrict type-data updates to known safe fields
+const typeDataSchema = z.object({
+  returnTrackings: z.any().optional(),
+  accountingStatus: z.nativeEnum(AccountingStatus).optional(),
+  status: z.nativeEnum(RefundStatus).optional(),
+}).strict();
 
 router.put('/:id/type-data', async (req: Request, res: Response) => {
   try {
@@ -176,7 +196,13 @@ const bulkSchema = z.object({
     .array(
       z.object({
         id: z.string().min(1),
-        changes: z.record(z.string(), z.unknown()),
+        changes: z.object({
+          refundAmount: z.number().optional(),
+          refundType: z.nativeEnum(RefundType).optional(),
+          status: z.nativeEnum(RefundStatus).optional(),
+          accountingStatus: z.nativeEnum(AccountingStatus).optional(),
+          returnTrackings: z.any().optional(),
+        }).strict(),
       })
     )
     .min(1),
@@ -185,19 +211,31 @@ const bulkSchema = z.object({
 router.post('/bulk-update', async (req: Request, res: Response) => {
   try {
     const { updates } = bulkSchema.parse(req.body);
-    const batch = db.batch();
     const col = db.collection('refundDetails');
 
-    const affectedOrderIds = new Set<string>();
+    // Pre-read docs to determine affected orders and avoid race with batch writes
+    const preRead = await Promise.all(
+      updates.map(async (u) => {
+        const ref = col.doc(u.id);
+        const doc = await ref.get();
+        return { ref, doc };
+      })
+    );
 
-    for (const { id, changes } of updates) {
-      const ref = col.doc(id);
-      batch.update(ref, { ...changes, updatedAt: new Date() });
-      const doc = await ref.get();
+    const affectedOrderIds = new Set<string>();
+    for (const { doc } of preRead) {
       if (doc.exists) {
         const data = doc.data() as any;
         if (data?.orderId) affectedOrderIds.add(data.orderId);
       }
+    }
+
+    const batch = db.batch();
+    const now = new Date();
+    for (let i = 0; i < updates.length; i++) {
+      const { ref } = preRead[i];
+      const { changes } = updates[i];
+      batch.update(ref, { ...changes, updatedAt: now });
     }
 
     await batch.commit();
@@ -225,9 +263,5 @@ router.delete('/:id', async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: 'Failed to delete refund' });
   }
 });
-
-function authGuard() {
-  // TODO: Add real auth; left as placeholder to acknowledge security enhancement
-}
 
 export default router; 

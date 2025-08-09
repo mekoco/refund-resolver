@@ -4,9 +4,16 @@ import { RefundType, AccountingStatus, ReturnStatus } from '@packages/shared';
 
 const router = Router();
 
+const parseDate = (v: any) => (v ? new Date(String(v)) : undefined);
+
 router.get('/refund-summary', async (req: Request, res: Response) => {
   try {
-    const snap = await db.collection('refundDetails').get();
+    const { startDate, endDate, limit } = req.query as any;
+    let query: FirebaseFirestore.Query = db.collection('refundDetails');
+    if (startDate) query = query.where('refundDate', '>=', parseDate(startDate));
+    if (endDate) query = query.where('refundDate', '<=', parseDate(endDate));
+    const max = Math.min(Number(limit) || 1000, 5000);
+    const snap = await query.limit(max).get();
     const details = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
 
     const totalAmount = details.reduce((s, d) => s + Number(d.refundAmount || 0), 0);
@@ -16,15 +23,20 @@ router.get('/refund-summary', async (req: Request, res: Response) => {
       byType[t] = (byType[t] || 0) + Number(d.refundAmount || 0);
     }
 
-    res.json({ success: true, totalAmount, byType });
+    res.json({ success: true, totalAmount, byType, count: details.length });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to build refund summary' });
   }
 });
 
-router.get('/accounting-status', async (_req: Request, res: Response) => {
+router.get('/accounting-status', async (req: Request, res: Response) => {
   try {
-    const snap = await db.collection('orders').get();
+    const { startDate, endDate, limit } = req.query as any;
+    let query: FirebaseFirestore.Query = db.collection('orders');
+    if (startDate) query = query.where('orderTime', '>=', parseDate(startDate));
+    if (endDate) query = query.where('orderTime', '<=', parseDate(endDate));
+    const max = Math.min(Number(limit) || 1000, 5000);
+    const snap = await query.limit(max).get();
     const orders = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
 
     const statusTotals: Record<string, { amount: number; count: number }> = {};
@@ -38,35 +50,46 @@ router.get('/accounting-status', async (_req: Request, res: Response) => {
       statusTotals[accountingStatus].count += 1;
     }
 
-    res.json({ success: true, statusTotals });
+    res.json({ success: true, statusTotals, count: orders.length });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to build accounting status' });
   }
 });
 
-router.get('/staff-errors', async (_req: Request, res: Response) => {
+router.get('/staff-errors', async (req: Request, res: Response) => {
   try {
-    const snap = await db.collection('refundDetails').where('refundType', '==', RefundType.INCORRECT_PACKING).get();
-    const details = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    const { startDate, endDate, limit } = req.query as any;
+    let query: FirebaseFirestore.Query = db.collection('refundReconciliations');
+    if (startDate) query = query.where('createdAt', '>=', parseDate(startDate));
+    if (endDate) query = query.where('createdAt', '<=', parseDate(endDate));
+    const max = Math.min(Number(limit) || 1000, 5000);
+    const snap = await query.limit(max).get();
 
+    const recs = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
     const byStaff: Record<string, { count: number; totalVariance: number }> = {};
-    for (const d of details) {
-      const staff = d?.packingError?.packedByStaffCode || 'UNKNOWN';
-      const variance = (d?.discrepancies || []).reduce((s: number, x: any) => s + Number(x?.variance || 0), 0);
-      if (!byStaff[staff]) byStaff[staff] = { count: 0, totalVariance: 0 };
-      byStaff[staff].count += 1;
-      byStaff[staff].totalVariance += variance;
+
+    for (const r of recs) {
+      const owner = r.createdBy || 'UNKNOWN';
+      const variance = Number(r.expectedValue || 0) - Number(r.actualValue || 0);
+      if (!byStaff[owner]) byStaff[owner] = { count: 0, totalVariance: 0 };
+      byStaff[owner].count += 1;
+      byStaff[owner].totalVariance += variance;
     }
 
-    res.json({ success: true, byStaff });
+    res.json({ success: true, byStaff, count: recs.length });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to build staff errors' });
   }
 });
 
-router.get('/defective-products', async (_req: Request, res: Response) => {
+router.get('/defective-products', async (req: Request, res: Response) => {
   try {
-    const snap = await db.collection('refundDetails').where('refundType', '==', RefundType.DEFECTIVE_PRODUCTS).get();
+    const { startDate, endDate, limit } = req.query as any;
+    let query: FirebaseFirestore.Query = db.collection('refundDetails').where('refundType', '==', RefundType.DEFECTIVE_PRODUCTS);
+    if (startDate) query = query.where('refundDate', '>=', parseDate(startDate));
+    if (endDate) query = query.where('refundDate', '<=', parseDate(endDate));
+    const max = Math.min(Number(limit) || 1000, 5000);
+    const snap = await query.limit(max).get();
     const details = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
 
     const items = details.flatMap(d => (Array.isArray(d.defectiveItems) ? d.defectiveItems : []).map((x: any) => ({
@@ -81,15 +104,20 @@ router.get('/defective-products', async (_req: Request, res: Response) => {
   }
 });
 
-router.get('/financial-impact', async (_req: Request, res: Response) => {
+router.get('/financial-impact', async (req: Request, res: Response) => {
   try {
-    const ordersSnap = await db.collection('orders').get();
+    const { startDate, endDate, limit } = req.query as any;
+    let query: FirebaseFirestore.Query = db.collection('orders');
+    if (startDate) query = query.where('orderTime', '>=', parseDate(startDate));
+    if (endDate) query = query.where('orderTime', '<=', parseDate(endDate));
+    const max = Math.min(Number(limit) || 1000, 5000);
+    const ordersSnap = await query.limit(max).get();
     const orders = ordersSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
 
     const totalRefunds = orders.reduce((s, o) => s + Number(o?.buyerRefundAmount || 0), 0);
     const totalAccounted = orders.reduce((s, o) => s + Number(o?.refundAccount?.accountedRefundAmount || 0), 0);
 
-    res.json({ success: true, totals: { totalRefunds, totalAccounted, recoveryRate: totalRefunds ? totalAccounted / totalRefunds : 0 } });
+    res.json({ success: true, totals: { totalRefunds, totalAccounted, recoveryRate: totalRefunds ? totalAccounted / totalRefunds : 0 }, count: orders.length });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to build financial impact report' });
   }

@@ -9,17 +9,30 @@ const router = Router();
 const listQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().optional(),
 });
 
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const { page, limit } = listQuerySchema.parse(req.query);
-    const offset = (page - 1) * limit;
+    const { page, limit, cursor } = listQuerySchema.parse(req.query);
 
-    const snap = await db.collection('returns').orderBy('updatedAt', 'desc').limit(offset + limit).get();
+    const base = db.collection('returns').orderBy('updatedAt', 'desc');
+
+    if (cursor) {
+      const cursorDoc = await db.collection('returns').doc(cursor).get();
+      if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor' });
+      const snap = await base.startAfter(cursorDoc).limit(limit).get();
+      const returns = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const nextCursor = returns.length === limit ? snap.docs[snap.docs.length - 1].id : null;
+      return res.json({ success: true, count: returns.length, returns, page, limit, nextCursor });
+    }
+
+    const offset = (page - 1) * limit;
+    const snap = await base.limit(offset + limit).get();
     const docs = snap.docs.slice(offset, offset + limit);
     const returns = docs.map((d) => ({ id: d.id, ...d.data() }));
-    res.json({ success: true, count: returns.length, returns, page, limit });
+    const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
+    res.json({ success: true, count: returns.length, returns, page, limit, nextCursor });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to list returns' });
   }

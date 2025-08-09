@@ -22,21 +22,33 @@ const upload = multer({
 const listQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().optional(),
 });
 
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const { page, limit } = listQuerySchema.parse(req.query);
-    const offset = (page - 1) * limit;
+    const { page, limit, cursor } = listQuerySchema.parse(req.query);
 
-    // Firestore does not support offset without loading; here we page by orderId for simplicity
     const baseQuery = db.collection('orders').orderBy('orderId');
+
+    // Prefer cursor-based pagination when provided
+    if (cursor) {
+      const cursorDoc = await db.collection('orders').doc(cursor).get();
+      if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor' });
+      const snap = await baseQuery.startAfter(cursorDoc).limit(limit).get();
+      const orders: Order[] = snap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+      const nextCursor = orders.length === limit ? snap.docs[snap.docs.length - 1].id : null;
+      return res.json({ success: true, count: orders.length, orders, page, limit, nextCursor });
+    }
+
+    // Fallback to page/limit (less efficient without cursor)
+    const offset = (page - 1) * limit;
     const firstPageSnap = await baseQuery.limit(offset + limit).get();
     const docs = firstPageSnap.docs.slice(offset, offset + limit);
-
     const orders: Order[] = docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+    const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
 
-    res.json({ success: true, count: orders.length, orders, page, limit });
+    res.json({ success: true, count: orders.length, orders, page, limit, nextCursor });
   } catch (error) {
     console.error('Error fetching orders:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch orders' });

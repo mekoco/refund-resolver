@@ -13,6 +13,7 @@ export default function OrdersPage() {
   const [uploading, setUploading] = useState(false);
   const [page, setPage] = useState(1);
   const [limit] = useState(50);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [stats, setStats] = useState({
     total: 0,
     completed: 0,
@@ -20,6 +21,8 @@ export default function OrdersPage() {
     totalRevenue: 0,
     totalProfit: 0,
   });
+
+  const errorMessage = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback);
 
   const fetchOrders = async () => {
     try {
@@ -29,9 +32,11 @@ export default function OrdersPage() {
       if (response.success) {
         setOrders(response.orders);
         calculateStats(response.orders);
+      } else {
+        setError('Failed to fetch orders');
       }
-    } catch (err) {
-      setError('Failed to fetch orders');
+    } catch (err: unknown) {
+      setError(errorMessage(err, 'Failed to fetch orders'));
       console.error(err);
     } finally {
       setLoading(false);
@@ -65,17 +70,19 @@ export default function OrdersPage() {
     if (!uploadFile) return;
 
     try {
+      setSuccessMessage(null);
+      setError(null);
       setUploading(true);
       const response = await api.uploadOrderExcel(uploadFile);
       if (response.success) {
-        alert(`Successfully imported ${response.results.successful} orders`);
+        setSuccessMessage(`Imported ${response.results.successful}/${response.results.total} orders`);
         setUploadFile(null);
         fetchOrders();
       } else {
-        alert('Upload failed');
+        setError(response?.message || 'Upload failed');
       }
-    } catch (err) {
-      alert('Failed to upload Excel file');
+    } catch (err: unknown) {
+      setError(errorMessage(err, 'Failed to upload Excel file'));
       console.error(err);
     } finally {
       setUploading(false);
@@ -105,6 +112,19 @@ export default function OrdersPage() {
           <h1 className="text-3xl font-bold text-gray-900">Orders Management</h1>
           <p className="mt-2 text-gray-600">View and manage all orders</p>
         </div>
+
+        {error && (
+          <div className="mb-6 rounded-md bg-red-50 p-4 text-red-700 border border-red-200">
+            <p className="font-semibold">Error</p>
+            <p className="text-sm mt-1">{error}</p>
+          </div>
+        )}
+        {successMessage && (
+          <div className="mb-6 rounded-md bg-green-50 p-4 text-green-700 border border-green-200">
+            <p className="font-semibold">Success</p>
+            <p className="text-sm mt-1">{successMessage}</p>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
           <div className="bg-white rounded-lg shadow p-6">
@@ -161,7 +181,6 @@ export default function OrdersPage() {
               Refresh
             </button>
           </div>
-          {error && <div className="text-red-600 mt-4">{error}</div>}
         </div>
 
         <div className="bg-white rounded-lg shadow">

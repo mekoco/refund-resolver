@@ -14,11 +14,12 @@ export async function recomputeAndWriteOrderRefundSnapshot(orderId: string): Pro
   if (detailIds.length > 0) {
     const chunks: string[][] = [];
     for (let i = 0; i < detailIds.length; i += 10) chunks.push(detailIds.slice(i, i + 10));
-    for (const chunk of chunks) {
-      const recSnap = await db
-        .collection('refundReconciliations')
-        .where('refundDetailId', 'in', chunk)
-        .get();
+
+    const snapPromises = chunks.map((chunk) =>
+      db.collection('refundReconciliations').where('refundDetailId', 'in', chunk).get()
+    );
+    const snaps = await Promise.all(snapPromises);
+    for (const recSnap of snaps) {
       for (const d of recSnap.docs) {
         const data = { id: d.id, ...d.data() } as any;
         const key = data.refundDetailId;
@@ -32,7 +33,11 @@ export async function recomputeAndWriteOrderRefundSnapshot(orderId: string): Pro
     const recs = detailIdToRecon[rd.id] || [];
     let actualValue = 0;
     if (recs.length > 0) {
-      recs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      recs.sort((a, b) => {
+        const aTime = a.updatedAt?.toDate ? a.updatedAt.toDate().getTime() : new Date(a.updatedAt).getTime();
+        const bTime = b.updatedAt?.toDate ? b.updatedAt.toDate().getTime() : new Date(b.updatedAt).getTime();
+        return bTime - aTime;
+      });
       actualValue = Number(recs[0]?.actualValue || 0);
     } else if (Array.isArray(rd.returnTrackings)) {
       for (const rt of rd.returnTrackings) {
@@ -50,14 +55,5 @@ export async function recomputeAndWriteOrderRefundSnapshot(orderId: string): Pro
   await db
     .collection('orders')
     .doc(orderId)
-    .set(
-      {
-        refundAccount: {
-          refundDetails,
-          accountedRefundAmount,
-        },
-        updatedAt: new Date(),
-      },
-      { merge: true }
-    );
+    .set({ refundAccount: { accountedRefundAmount } }, { merge: true });
 } 
