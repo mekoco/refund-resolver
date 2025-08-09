@@ -539,6 +539,81 @@ class InventoryManager {
 
 Accounting is achieved when values across returns, courier payments, and write-offs (represented via discrepancies) match the user refund amount for the order. An order cannot be marked `FULLY_ACCOUNTED` while any return is `LOST_BY_COURIER`.
 
+## Post‑Reconciliation Changes: Voiding by Mismatch (Order Refund Amount Changes)
+
+When an order's `buyerRefundAmount` changes after the order has already been fully reconciled, the system must effectively void the order-level fully-accounted state. We do not delete or mutate historical reconciliation rows. Instead, we re-introduce a mismatch so the order transitions back to a non-fully-accounted state until new reconciliation actions are taken.
+
+### Behavior
+- The Excel upload flow remains the single source of truth for order totals. Any change in `buyerRefundAmount` is materialized as a new `RefundDetail` line item for the delta (positive or negative) with `refundType = OTHERS` and `accountingStatus = UNACCOUNTED`.
+- Existing `RefundReconciliation` records are preserved (not deleted). They remain as the latest reconciliation state for their associated `RefundDetail` rows.
+- The order-level `refundAccount.accountedRefundAmount` is recomputed after every write via `recomputeAndWriteOrderRefundSnapshot(orderId)` and represents the sum of the latest reconciliation `actualValue` per `RefundDetail` (or the derived returns value for details without a reconciliation yet).
+- Order accounting status is derived (not stored) and becomes non-fully-accounted if totals no longer match:
+  - `FULLY_ACCOUNTED` only when `abs(accountedRefundAmount - sum(refundDetails.refundAmount)) < epsilon` and no return has status `LOST_BY_COURIER`.
+  - Otherwise `PARTIALLY_ACCOUNTED` (or `UNACCOUNTED` when zero recovery).
+- This constitutes an implicit "void" of the previous fully-accounted state at the order level because the totals no longer balance.
+
+### Invariants
+- We never mutate or delete prior reconciliations when the order total changes.
+- We always create a new `RefundDetail` to represent the change in the buyer refund amount.
+- We always recompute the order snapshot immediately after any write affecting refunds/returns/reconciliations.
+
+### Flow (Pseudo-code)
+
+```typescript
+// Excel upload enhancement (already implemented)
+async function processOrderUpdate(existingOrder: Order, newData: Order) {
+  // Compute delta on buyerRefundAmount
+  const delta = Number(newData.buyerRefundAmount || 0) - Number(existingOrder.buyerRefundAmount || 0);
+  if (Math.abs(delta) > 0.01) {
+    await createRefundDetail({
+      orderId: existingOrder.id,
+      refundAmount: delta, // positive for increase, negative for decrease
+      refundDate: Timestamp.now(),
+      status: delta >= 0 ? RefundStatus.INITIATED : RefundStatus.PROCESSING,
+      refundType: RefundType.OTHERS,
+      accountingStatus: AccountingStatus.UNACCOUNTED,
+      createdBy: 'system:excel-upload'
+    });
+  }
+
+  // Persist order changes
+  await saveOrder({ ...existingOrder, ...newData, updatedAt: Timestamp.now() });
+
+  // Recompute snapshot → this will now reflect a mismatch vs. new totals
+  await recomputeAndWriteOrderRefundSnapshot(existingOrder.id);
+
+  // Validate integrity
+  await validateRefundDetailsSum(existingOrder.id, newData.buyerRefundAmount);
+}
+
+// Snapshot recompute (already implemented)
+async function recomputeAndWriteOrderRefundSnapshot(orderId: string) {
+  // accountedRefundAmount = sum(latest reconciliation actualValue per RefundDetail)
+  //                        or derived return value when no reconciliation exists yet.
+  // Write to orders/{orderId}.refundAccount.accountedRefundAmount
+}
+
+// Derived accounting status (already implemented)
+function inferOrderAccountingStatus(refundAccount: RefundAccounting): AccountingStatus {
+  // FULLY_ACCOUNTED if accountedRefundAmount ~= sum(refundDetails.refundAmount)
+  // and no LOST_BY_COURIER. Else PARTIALLY_ACCOUNTED/UNACCOUNTED.
+}
+```
+
+### Examples
+- Increase after full reconciliation: Order initially `buyerRefundAmount = 500`, a single refund detail is reconciled MATCHED with `actualValue = 500`. Later, Excel updates the order to `buyerRefundAmount = 800`.
+  - System creates `RefundDetail(OTHERS, refundAmount = +300, UNACCOUNTED)`.
+  - Snapshot recompute keeps `accountedRefundAmount = 500` (no new reconciliation for the +300 line), while total expected is now `800`.
+  - `inferOrderAccountingStatus` returns `PARTIALLY_ACCOUNTED` → previous fully-accounted state is effectively voided.
+- Decrease after full reconciliation: Order `buyerRefundAmount` drops from `500` to `350`.
+  - System creates `RefundDetail(OTHERS, refundAmount = -150, UNACCOUNTED)`.
+  - Snapshot recompute may show `accountedRefundAmount = 500` vs expected `350` until a corrective reconciliation/write-off is recorded for the negative adjustment detail.
+  - Status becomes `PARTIALLY_ACCOUNTED` until resolved.
+
+### Notes
+- No explicit "void" API is required. The system treats any post-reconciliation change as a new accounting task by introducing a new unaccounted refund detail and recomputing totals. Historical reconciliations remain intact for auditability.
+- Operators should reconcile the new delta detail (e.g., via `POST /api/reconciliation/:refundId/reconcile`) or adjust returns/discrepancies accordingly to bring the order back to `FULLY_ACCOUNTED`.
+
 ## Dashboard Design
 
 ### Objectives
