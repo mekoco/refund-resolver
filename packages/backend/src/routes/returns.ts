@@ -20,45 +20,76 @@ router.get('/', async (req: Request, res: Response) => {
 
     if (cursor) {
       const cursorDoc = await db.collection('returns').doc(cursor).get();
-      if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor' });
+      if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor', code: 'INVALID_CURSOR' });
       const snap = await base.startAfter(cursorDoc).limit(limit).get();
       const returns = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       const nextCursor = returns.length === limit ? snap.docs[snap.docs.length - 1].id : null;
       return res.json({ success: true, count: returns.length, returns, page, limit, nextCursor });
     }
 
-    const offset = (page - 1) * limit;
-    const snap = await base.limit(offset + limit).get();
-    const docs = snap.docs.slice(offset, offset + limit);
-    const returns = docs.map((d) => ({ id: d.id, ...d.data() }));
-    const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
+    if (page === 1) {
+      const snap = await base.limit(limit).get();
+      const returns = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const nextCursor = returns.length === limit ? snap.docs[snap.docs.length - 1].id : null;
+      return res.json({ success: true, count: returns.length, returns, page, limit, nextCursor });
+    }
+
+    const prevSnap = await base.limit((page - 1) * limit).get();
+    if (prevSnap.empty) return res.json({ success: true, count: 0, returns: [], page, limit, nextCursor: null });
+    const lastPrevDoc = prevSnap.docs[prevSnap.docs.length - 1];
+    const snap = await base.startAfter(lastPrevDoc).limit(limit).get();
+    const returns = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const nextCursor = returns.length === limit ? snap.docs[snap.docs.length - 1].id : null;
     res.json({ success: true, count: returns.length, returns, page, limit, nextCursor });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to list returns' });
+    res.status(500).json({ success: false, error: 'Failed to list returns', code: 'RETURNS_LIST_ERROR' });
   }
 });
 
 router.get('/:id', async (req: Request, res: Response) => {
   try {
     const doc = await db.collection('returns').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found' });
+    if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'RETURN_NOT_FOUND' });
     res.json({ success: true, return: { id: doc.id, ...doc.data() } });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to get return' });
+    res.status(500).json({ success: false, error: 'Failed to get return', code: 'RETURN_GET_ERROR' });
   }
 });
 
 router.get('/pending', async (req: Request, res: Response) => {
   try {
-    const { page, limit } = listQuerySchema.parse(req.query);
-    const offset = (page - 1) * limit;
+    const { page, limit, cursor } = listQuerySchema.parse(req.query);
     const pendingStatuses: ReturnStatus[] = [ReturnStatus.PENDING, ReturnStatus.IN_TRANSIT];
-    const snap = await db.collection('returns').where('returnStatus', 'in', pendingStatuses).orderBy('updatedAt', 'desc').limit(offset + limit).get();
-    const docs = snap.docs.slice(offset, offset + limit);
+    const base = db.collection('returns').where('returnStatus', 'in', pendingStatuses).orderBy('updatedAt', 'desc');
+
+    if (cursor) {
+      const cursorDoc = await db.collection('returns').doc(cursor).get();
+      if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor', code: 'INVALID_CURSOR' });
+      const snap = await base.startAfter(cursorDoc).limit(limit).get();
+      const docs = snap.docs;
+      const items = docs.map((d) => ({ id: d.id, ...d.data() }));
+      const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
+      return res.json({ success: true, count: items.length, items, page, limit, nextCursor });
+    }
+
+    if (page === 1) {
+      const snap = await base.limit(limit).get();
+      const docs = snap.docs;
+      const items = docs.map((d) => ({ id: d.id, ...d.data() }));
+      const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
+      return res.json({ success: true, count: items.length, items, page, limit, nextCursor });
+    }
+
+    const prevSnap = await base.limit((page - 1) * limit).get();
+    if (prevSnap.empty) return res.json({ success: true, count: 0, items: [], page, limit, nextCursor: null });
+    const lastPrevDoc = prevSnap.docs[prevSnap.docs.length - 1];
+    const snap = await base.startAfter(lastPrevDoc).limit(limit).get();
+    const docs = snap.docs;
     const items = docs.map((d) => ({ id: d.id, ...d.data() }));
-    res.json({ success: true, count: items.length, items, page, limit });
+    const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
+    res.json({ success: true, count: items.length, items, page, limit, nextCursor });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to list pending returns' });
+    res.status(500).json({ success: false, error: 'Failed to list pending returns', code: 'RETURNS_PENDING_ERROR' });
   }
 });
 
@@ -77,7 +108,7 @@ const initiateSchema = z.object({
     )
     .min(1),
   reason: z.string().optional(),
-  expectedReturnDate: z.union([z.coerce.date(), z.string()]).optional(),
+  expectedReturnDate: z.coerce.date().optional(),
 });
 
 router.post('/initiate', async (req: Request, res: Response) => {
@@ -86,7 +117,7 @@ router.post('/initiate', async (req: Request, res: Response) => {
 
     const rdRef = db.collection('refundDetails').doc(refundDetailId);
     const rdDoc = await rdRef.get();
-    if (!rdDoc.exists) return res.status(404).json({ success: false, error: 'RefundDetail not found' });
+    if (!rdDoc.exists) return res.status(404).json({ success: false, error: 'RefundDetail not found', code: 'REFUND_DETAIL_NOT_FOUND' });
     const rd = { id: rdDoc.id, ...rdDoc.data() } as any;
 
     const now = new Date();
@@ -96,7 +127,7 @@ router.post('/initiate', async (req: Request, res: Response) => {
     const returnTracking: any = {
       id: newReturnId,
       returnInitiatedDate: now,
-      expectedReturnDate: expectedReturnDate ? new Date(expectedReturnDate as any) : undefined,
+      expectedReturnDate: expectedReturnDate || undefined,
       actualReturnDate: undefined,
       returnStatus: ReturnStatus.PENDING,
       returnItems,
@@ -121,8 +152,8 @@ router.post('/initiate', async (req: Request, res: Response) => {
 
     res.status(201).json({ success: true, return: returnTracking });
   } catch (e: any) {
-    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x) => x.message).join('; ') });
-    res.status(500).json({ success: false, error: 'Failed to initiate return' });
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    res.status(500).json({ success: false, error: 'Failed to initiate return', code: 'RETURN_INITIATE_ERROR' });
   }
 });
 
@@ -150,12 +181,12 @@ async function updateReturnStatus(req: Request, res: Response, status: ReturnSta
   try {
     const returnId = req.params.id;
     const idxDoc = await db.collection('returns').doc(returnId).get();
-    if (!idxDoc.exists) return res.status(404).json({ success: false, error: 'Return not found' });
+    if (!idxDoc.exists) return res.status(404).json({ success: false, error: 'Return not found', code: 'RETURN_NOT_FOUND' });
 
     const { refundDetailId, orderId } = idxDoc.data() as any;
     const rdRef = db.collection('refundDetails').doc(refundDetailId);
     const rdDoc = await rdRef.get();
-    if (!rdDoc.exists) return res.status(404).json({ success: false, error: 'RefundDetail not found' });
+    if (!rdDoc.exists) return res.status(404).json({ success: false, error: 'RefundDetail not found', code: 'REFUND_DETAIL_NOT_FOUND' });
 
     const rd = rdDoc.data() as any;
     const updated = (rd.returnTrackings || []).map((rt: any) =>
@@ -172,7 +203,7 @@ async function updateReturnStatus(req: Request, res: Response, status: ReturnSta
 
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to update return status' });
+    res.status(500).json({ success: false, error: 'Failed to update return status', code: 'RETURN_STATUS_UPDATE_ERROR' });
   }
 }
 

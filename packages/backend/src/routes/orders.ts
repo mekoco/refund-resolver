@@ -5,7 +5,7 @@ import { OrderExcelReader } from '../utils/orderExcelReader';
 import { Order, AccountingStatus, RefundStatus, RefundType } from '@packages/shared';
 import * as fs from 'fs';
 import { z, ZodIssue } from 'zod';
-import { recomputeAndWriteOrderRefundSnapshot } from '../utils/snapshot';
+import { recomputeAndWriteOrderRefundSnapshot, validateRefundDetailsSumEqualsOrder } from '../utils/snapshot';
 
 const router = Router();
 
@@ -41,17 +41,28 @@ router.get('/', async (req: Request, res: Response) => {
       return res.json({ success: true, count: orders.length, orders, page, limit, nextCursor });
     }
 
-    // Fallback to page/limit (less efficient without cursor)
-    const offset = (page - 1) * limit;
-    const firstPageSnap = await baseQuery.limit(offset + limit).get();
-    const docs = firstPageSnap.docs.slice(offset, offset + limit);
-    const orders: Order[] = docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
-    const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
+    // First page without cursor
+    if (page === 1) {
+      const snap = await baseQuery.limit(limit).get();
+      const orders: Order[] = snap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+      const nextCursor = orders.length === limit ? snap.docs[snap.docs.length - 1].id : null;
+      return res.json({ success: true, count: orders.length, orders, page, limit, nextCursor });
+    }
+
+    // For page > 1 without cursor, compute cursor by fetching the last doc of the previous page only
+    const prevSnap = await baseQuery.limit((page - 1) * limit).get();
+    if (prevSnap.empty) {
+      return res.json({ success: true, count: 0, orders: [], page, limit, nextCursor: null });
+    }
+    const lastPrevDoc = prevSnap.docs[prevSnap.docs.length - 1];
+    const snap = await baseQuery.startAfter(lastPrevDoc).limit(limit).get();
+    const orders: Order[] = snap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+    const nextCursor = orders.length === limit ? snap.docs[snap.docs.length - 1].id : null;
 
     res.json({ success: true, count: orders.length, orders, page, limit, nextCursor });
   } catch (error) {
     console.error('Error fetching orders:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch orders' });
+    res.status(500).json({ success: false, error: 'Failed to fetch orders', code: 'ORDERS_LIST_ERROR' });
   }
 });
 
@@ -95,7 +106,7 @@ const orderSchema = z.object({
 
 router.post('/upload-excel', upload.single('file'), async (req: Request, res: Response) => {
   if (!req.file) {
-    return res.status(400).json({ success: false, error: 'No file uploaded' });
+    return res.status(400).json({ success: false, error: 'No file uploaded', code: 'NO_FILE' });
   }
 
   const cleanup = () => {
@@ -153,7 +164,9 @@ router.post('/upload-excel', upload.single('file'), async (req: Request, res: Re
           tx.set(docRef, { ...order, updatedAt: new Date() }, { merge: true });
         });
 
+        // Recompute snapshot and validate sums per business rules
         await recomputeAndWriteOrderRefundSnapshot(order.orderId);
+        await validateRefundDetailsSumEqualsOrder(order.orderId);
         results.successful++;
       } catch (error: any) {
         results.failed++;
@@ -167,7 +180,7 @@ router.post('/upload-excel', upload.single('file'), async (req: Request, res: Re
   } catch (error: any) {
     console.error('Error processing Excel file:', error);
     cleanup();
-    res.status(500).json({ success: false, error: 'Failed to process Excel file', details: error.message });
+    res.status(500).json({ success: false, error: 'Failed to process Excel file', details: error.message, code: 'EXCEL_PROCESSING_FAILED' });
   }
 });
 
@@ -176,13 +189,13 @@ router.get('/:orderId', async (req: Request, res: Response) => {
     const doc = await db.collection('orders').doc(req.params.orderId).get();
 
     if (!doc.exists) {
-      return res.status(404).json({ success: false, error: 'Order not found' });
+      return res.status(404).json({ success: false, error: 'Order not found', code: 'ORDER_NOT_FOUND' });
     }
 
     res.json({ success: true, order: { id: doc.id, ...doc.data() } });
   } catch (error) {
     console.error('Error fetching order:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch order' });
+    res.status(500).json({ success: false, error: 'Failed to fetch order', code: 'ORDER_GET_ERROR' });
   }
 });
 

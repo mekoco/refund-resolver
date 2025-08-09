@@ -56,4 +56,23 @@ export async function recomputeAndWriteOrderRefundSnapshot(orderId: string): Pro
     .collection('orders')
     .doc(orderId)
     .set({ refundAccount: { accountedRefundAmount } }, { merge: true });
+}
+
+// Computes the sum of refundAmount across all RefundDetails for a given order
+export async function getRefundDetailsTotalAmount(orderId: string): Promise<number> {
+  const snap = await db.collection('refundDetails').where('orderId', '==', orderId).get();
+  return snap.docs.reduce((sum, d) => sum + Number((d.data() as any)?.refundAmount || 0), 0);
+}
+
+// Validates that the sum of RefundDetails equals the Order.buyerRefundAmount (within epsilon)
+export async function validateRefundDetailsSumEqualsOrder(orderId: string, epsilon: number = 0.01): Promise<{ actualTotal: number; expectedTotal: number }> {
+  const orderDoc = await db.collection('orders').doc(orderId).get();
+  if (!orderDoc.exists) throw new Error(`Order ${orderId} not found`);
+  const order = orderDoc.data() as any;
+  const expectedTotal = Number(order?.buyerRefundAmount || 0);
+  const actualTotal = await getRefundDetailsTotalAmount(orderId);
+  if (Math.abs(actualTotal - expectedTotal) > epsilon) {
+    throw new Error(`RefundDetails sum (${actualTotal}) does not match order refund amount (${expectedTotal})`);
+  }
+  return { actualTotal, expectedTotal };
 } 

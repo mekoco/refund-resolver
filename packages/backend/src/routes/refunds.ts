@@ -20,32 +20,39 @@ router.get('/', async (req: Request, res: Response) => {
 
     if (cursor) {
       const cursorDoc = await db.collection('refundDetails').doc(cursor).get();
-      if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor' });
+      if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor', code: 'INVALID_CURSOR' });
       const snap = await baseQuery.startAfter(cursorDoc).limit(limit).get();
       const refunds = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       const nextCursor = refunds.length === limit ? snap.docs[snap.docs.length - 1].id : null;
       return res.json({ success: true, count: refunds.length, refunds, page, limit, nextCursor });
     }
 
-    const offset = (page - 1) * limit;
-    const snap = await baseQuery.limit(offset + limit).get();
-    const docs = snap.docs.slice(offset, offset + limit);
+    if (page === 1) {
+      const snap = await baseQuery.limit(limit).get();
+      const refunds = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const nextCursor = refunds.length === limit ? snap.docs[snap.docs.length - 1].id : null;
+      return res.json({ success: true, count: refunds.length, refunds, page, limit, nextCursor });
+    }
 
-    const refunds = docs.map((d) => ({ id: d.id, ...d.data() }));
-    const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
+    const prevSnap = await baseQuery.limit((page - 1) * limit).get();
+    if (prevSnap.empty) return res.json({ success: true, count: 0, refunds: [], page, limit, nextCursor: null });
+    const lastPrevDoc = prevSnap.docs[prevSnap.docs.length - 1];
+    const snap = await baseQuery.startAfter(lastPrevDoc).limit(limit).get();
+    const refunds = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const nextCursor = refunds.length === limit ? snap.docs[snap.docs.length - 1].id : null;
     res.json({ success: true, count: refunds.length, refunds, page, limit, nextCursor });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to list refunds' });
+    res.status(500).json({ success: false, error: 'Failed to list refunds', code: 'REFUNDS_LIST_ERROR' });
   }
 });
 
 router.get('/:id', async (req: Request, res: Response) => {
   try {
     const doc = await db.collection('refundDetails').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found' });
+    if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
     res.json({ success: true, refund: { id: doc.id, ...doc.data() } });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to get refund' });
+    res.status(500).json({ success: false, error: 'Failed to get refund', code: 'REFUND_GET_ERROR' });
   }
 });
 
@@ -82,8 +89,8 @@ router.post('/initiate', async (req: Request, res: Response) => {
 
     res.status(201).json({ success: true, refund: { id: doc.id, ...doc.data() } });
   } catch (e: any) {
-    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
-    res.status(500).json({ success: false, error: 'Failed to initiate refund' });
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    res.status(500).json({ success: false, error: 'Failed to initiate refund', code: 'REFUND_INITIATE_ERROR' });
   }
 });
 
@@ -106,7 +113,7 @@ router.post('/split', async (req: Request, res: Response) => {
     const { refundId, splits } = splitSchema.parse(req.body);
 
     const originalDoc = await db.collection('refundDetails').doc(refundId).get();
-    if (!originalDoc.exists) return res.status(404).json({ success: false, error: 'Original refund not found' });
+    if (!originalDoc.exists) return res.status(404).json({ success: false, error: 'Original refund not found', code: 'REFUND_NOT_FOUND' });
     const original = { id: originalDoc.id, ...originalDoc.data() } as any;
 
     const batch = db.batch();
@@ -135,8 +142,8 @@ router.post('/split', async (req: Request, res: Response) => {
 
     res.json({ success: true, createdIds });
   } catch (e: any) {
-    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
-    res.status(500).json({ success: false, error: 'Failed to split refund' });
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    res.status(500).json({ success: false, error: 'Failed to split refund', code: 'REFUND_SPLIT_ERROR' });
   }
 });
 
@@ -152,7 +159,7 @@ router.put('/:id/status', async (req: Request, res: Response) => {
     const { status } = statusSchema.parse(req.body);
     const docRef = db.collection('refundDetails').doc(req.params.id);
     const doc = await docRef.get();
-    if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found' });
+    if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
     await docRef.update({ status, updatedAt: new Date() });
 
     const data = doc.data() as any;
@@ -160,14 +167,35 @@ router.put('/:id/status', async (req: Request, res: Response) => {
 
     res.json({ success: true });
   } catch (e: any) {
-    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
-    res.status(500).json({ success: false, error: 'Failed to update status' });
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    res.status(500).json({ success: false, error: 'Failed to update status', code: 'REFUND_STATUS_UPDATE_ERROR' });
   }
+});
+
+// Strict typing for returnTrackings
+const returnItemSchema = z.object({
+  skuName: z.string().min(1),
+  quantity: z.number().nonnegative(),
+  unitPrice: z.number().nonnegative(),
+  condition: z.enum(['GOOD', 'DAMAGED', 'MISSING']),
+  restockedDate: z.coerce.date().optional(),
+  restockedBy: z.string().optional(),
+});
+
+const returnTrackingSchema = z.object({
+  id: z.string().min(1),
+  returnInitiatedDate: z.coerce.date().optional(),
+  expectedReturnDate: z.coerce.date().optional(),
+  actualReturnDate: z.coerce.date().optional(),
+  returnStatus: z.enum(['PENDING', 'IN_TRANSIT', 'RECEIVED', 'INSPECTING', 'RESTOCKED', 'DISCREPANCY_FOUND', 'LOST_BY_COURIER', 'PAID_BY_COURIER']),
+  returnItems: z.array(returnItemSchema),
+  totalReturnValue: z.number().nonnegative(),
+  reason: z.string().optional(),
 });
 
 // Restrict type-data updates to known safe fields
 const typeDataSchema = z.object({
-  returnTrackings: z.any().optional(),
+  returnTrackings: z.array(returnTrackingSchema).optional(),
   accountingStatus: z.nativeEnum(AccountingStatus).optional(),
   status: z.nativeEnum(RefundStatus).optional(),
 }).strict();
@@ -177,7 +205,7 @@ router.put('/:id/type-data', async (req: Request, res: Response) => {
     const updates = typeDataSchema.parse(req.body);
     const docRef = db.collection('refundDetails').doc(req.params.id);
     const doc = await docRef.get();
-    if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found' });
+    if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
 
     await docRef.update({ ...updates, updatedAt: new Date() });
 
@@ -186,8 +214,8 @@ router.put('/:id/type-data', async (req: Request, res: Response) => {
 
     res.json({ success: true });
   } catch (e: any) {
-    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
-    res.status(500).json({ success: false, error: 'Failed to update type data' });
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    res.status(500).json({ success: false, error: 'Failed to update type data', code: 'REFUND_TYPE_DATA_ERROR' });
   }
 });
 
@@ -201,7 +229,7 @@ const bulkSchema = z.object({
           refundType: z.nativeEnum(RefundType).optional(),
           status: z.nativeEnum(RefundStatus).optional(),
           accountingStatus: z.nativeEnum(AccountingStatus).optional(),
-          returnTrackings: z.any().optional(),
+          returnTrackings: z.array(returnTrackingSchema).optional(),
         }).strict(),
       })
     )
@@ -244,8 +272,8 @@ router.post('/bulk-update', async (req: Request, res: Response) => {
 
     res.json({ success: true, updated: updates.length });
   } catch (e: any) {
-    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
-    res.status(500).json({ success: false, error: 'Failed bulk update' });
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    res.status(500).json({ success: false, error: 'Failed bulk update', code: 'REFUND_BULK_UPDATE_ERROR' });
   }
 });
 
@@ -260,7 +288,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
     }
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to delete refund' });
+    res.status(500).json({ success: false, error: 'Failed to delete refund', code: 'REFUND_DELETE_ERROR' });
   }
 });
 
