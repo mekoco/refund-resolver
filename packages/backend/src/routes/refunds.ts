@@ -36,6 +36,7 @@ router.get('/', async (req: Request, res: Response) => {
 
     return res.status(400).json({ success: false, error: 'Cursor is required for page > 1. Use nextCursor from the previous response.', code: 'CURSOR_REQUIRED' });
   } catch (e) {
+    console.error('REFUNDS_LIST_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to list refunds', code: 'REFUNDS_LIST_ERROR' });
   }
 });
@@ -46,6 +47,7 @@ router.get('/:id', async (req: Request, res: Response) => {
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
     res.json({ success: true, refund: { id: doc.id, ...doc.data() } });
   } catch (e) {
+    console.error('REFUND_GET_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to get refund', code: 'REFUND_GET_ERROR' });
   }
 });
@@ -95,6 +97,7 @@ router.post('/initiate', async (req: Request, res: Response) => {
     res.status(201).json({ success: true, refund: { id: doc.id, ...doc.data() } });
   } catch (e: any) {
     if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    console.error('REFUND_INITIATE_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to initiate refund', code: 'REFUND_INITIATE_ERROR' });
   }
 });
@@ -144,10 +147,14 @@ router.post('/split', async (req: Request, res: Response) => {
       const payload: any = {
         ...original,
         ...split,
-        id: undefined,
         createdAt: now,
         updatedAt: now,
       };
+      delete payload.id;
+      // Ensure required fields present post-merge
+      if (!payload.orderId || typeof payload.refundAmount !== 'number') {
+        throw new Error('Invalid split payload after merge');
+      }
       batch.set(ref, payload);
       createdIds.push(ref.id);
     }
@@ -159,6 +166,7 @@ router.post('/split', async (req: Request, res: Response) => {
     res.json({ success: true, createdIds });
   } catch (e: any) {
     if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    console.error('REFUND_SPLIT_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to split refund', code: 'REFUND_SPLIT_ERROR' });
   }
 });
@@ -179,6 +187,7 @@ router.put('/:id/status', async (req: Request, res: Response) => {
     res.json({ success: true });
   } catch (e: any) {
     if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    console.error('REFUND_STATUS_UPDATE_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to update status', code: 'REFUND_STATUS_UPDATE_ERROR' });
   }
 });
@@ -226,6 +235,7 @@ router.put('/:id/type-data', async (req: Request, res: Response) => {
     res.json({ success: true });
   } catch (e: any) {
     if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    console.error('REFUND_TYPE_DATA_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to update type data', code: 'REFUND_TYPE_DATA_ERROR' });
   }
 });
@@ -291,7 +301,7 @@ router.post('/bulk-update', async (req: Request, res: Response) => {
         if (payload.lastUpdatedAt) {
           const currentUpdatedAt = (data?.updatedAt as FirebaseFirestore.Timestamp)?.toDate?.() || data?.updatedAt;
           const expected = new Date(payload.lastUpdatedAt);
-          if (!currentUpdatedAt || Math.abs(currentUpdatedAt.getTime() - expected.getTime()) > 1) {
+          if (!currentUpdatedAt || Math.abs(currentUpdatedAt.getTime() - expected.getTime()) > 2000) {
             throw new Error(`Conflict on ${ref.id}: document was modified by another process`);
           }
         }
@@ -306,8 +316,10 @@ router.post('/bulk-update', async (req: Request, res: Response) => {
   } catch (e: any) {
     if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
     if (typeof e?.message === 'string' && e.message.startsWith('Conflict')) {
+      console.error('REFUND_BULK_UPDATE_CONFLICT', e.message);
       return res.status(409).json({ success: false, error: e.message, code: 'CONFLICT' });
     }
+    console.error('REFUND_BULK_UPDATE_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed bulk update', code: 'REFUND_BULK_UPDATE_ERROR' });
   }
 });
@@ -324,6 +336,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
     res.json({ success: true });
   } catch (e) {
+    console.error('REFUND_DELETE_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to delete refund', code: 'REFUND_DELETE_ERROR' });
   }
 });

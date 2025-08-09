@@ -31,8 +31,9 @@ const db = admin.firestore();
 if (process.env.NODE_ENV !== 'production') {
   db.settings({
     host: 'localhost:8080',
-    ssl: false
-  });
+    ssl: false,
+    ignoreUndefinedProperties: true,
+  } as any);
   console.log('Connected to Firestore emulator at localhost:8080');
 }
 
