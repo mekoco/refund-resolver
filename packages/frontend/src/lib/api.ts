@@ -19,6 +19,18 @@ type DefectiveProductItem = {
 
 type UpdateTypeDataPayload = Partial<Pick<RefundDetail, 'returnTrackings' | 'accountingStatus' | 'status'>> & Record<string, unknown>;
 
+type PageParams = { page?: number; limit?: number };
+
+function withQuery(url: string, params?: Record<string, string | number | boolean | undefined>) {
+  if (!params) return url;
+  const q = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) q.set(k, String(v));
+  });
+  const qs = q.toString();
+  return qs ? `${url}?${qs}` : url;
+}
+
 export const api = {
   async checkHealth() {
     const response = await fetch(`${API_BASE_URL}/health`);
@@ -28,8 +40,8 @@ export const api = {
     return response.json();
   },
 
-  async getOrders(): Promise<{ success: boolean; count: number; orders: Order[] }> {
-    const response = await fetch(`${API_BASE_URL}/orders`);
+  async getOrders(params?: PageParams): Promise<{ success: boolean; count: number; orders: Order[]; page: number; limit: number }> {
+    const response = await fetch(withQuery(`${API_BASE_URL}/orders`, params));
     if (!response.ok) {
       throw new Error('Failed to fetch orders');
     }
@@ -59,8 +71,8 @@ export const api = {
   },
 
   // Refunds
-  async listRefunds(): Promise<{ success: boolean; count: number; refunds: RefundDetail[] }> {
-    const response = await fetch(`${API_BASE_URL}/refunds`);
+  async listRefunds(params?: PageParams): Promise<{ success: boolean; count: number; refunds: RefundDetail[]; page: number; limit: number }> {
+    const response = await fetch(withQuery(`${API_BASE_URL}/refunds`, params));
     if (!response.ok) throw new Error('Failed to list refunds');
     return response.json();
   },
@@ -107,8 +119,8 @@ export const api = {
   },
 
   // Returns
-  async listReturns(): Promise<{ success: boolean; count: number; returns: ReturnIndexDoc[] }> {
-    const response = await fetch(`${API_BASE_URL}/returns`);
+  async listReturns(params?: PageParams): Promise<{ success: boolean; count: number; returns: ReturnIndexDoc[]; page: number; limit: number }> {
+    const response = await fetch(withQuery(`${API_BASE_URL}/returns`, params));
     if (!response.ok) throw new Error('Failed to list returns');
     return response.json();
   },
@@ -117,8 +129,8 @@ export const api = {
     if (!response.ok) throw new Error('Failed to get return');
     return response.json();
   },
-  async listPendingReturns(): Promise<{ success: boolean; count: number; items: ReturnIndexDoc[] }> {
-    const response = await fetch(`${API_BASE_URL}/returns/pending`);
+  async listPendingReturns(params?: PageParams): Promise<{ success: boolean; count: number; items: ReturnIndexDoc[]; page: number; limit: number }> {
+    const response = await fetch(withQuery(`${API_BASE_URL}/returns/pending`, params));
     if (!response.ok) throw new Error('Failed to list pending returns');
     return response.json();
   },

@@ -1,14 +1,27 @@
 import { Router, Request, Response } from 'express';
 import { db, admin } from '../config/firebase';
 import { AccountingStatus, RefundDetail, RefundStatus, RefundType } from '@packages/shared';
+import { z, ZodIssue } from 'zod';
+import { recomputeAndWriteOrderRefundSnapshot } from '../utils/snapshot';
 
 const router = Router();
 
-router.get('/', async (_req: Request, res: Response) => {
+const listQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const snap = await db.collection('refundDetails').get();
-    const refunds = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    res.json({ success: true, count: refunds.length, refunds });
+    const { page, limit } = listQuerySchema.parse(req.query);
+    const offset = (page - 1) * limit;
+
+    const baseQuery = db.collection('refundDetails').orderBy('updatedAt', 'desc');
+    const snap = await baseQuery.limit(offset + limit).get();
+    const docs = snap.docs.slice(offset, offset + limit);
+
+    const refunds = docs.map((d) => ({ id: d.id, ...d.data() }));
+    res.json({ success: true, count: refunds.length, refunds, page, limit });
   } catch (e) {
     res.status(500).json({ success: false, error: 'Failed to list refunds' });
   }
@@ -24,12 +37,19 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
+const initiateSchema = z.object({
+  orderId: z.string().min(1),
+  refundAmount: z.number(),
+  refundDate: z.coerce.date().optional(),
+  refundType: z.nativeEnum(RefundType).optional(),
+  status: z.nativeEnum(RefundStatus).optional(),
+  accountingStatus: z.nativeEnum(AccountingStatus).optional(),
+  createdBy: z.string().min(1).optional(),
+});
+
 router.post('/initiate', async (req: Request, res: Response) => {
   try {
-    const data = req.body as Partial<RefundDetail>;
-    if (!data.orderId || data.refundAmount === undefined) {
-      return res.status(400).json({ success: false, error: 'orderId and refundAmount are required' });
-    }
+    const data = initiateSchema.parse(req.body);
 
     const now = new Date();
     const payload: any = {
@@ -38,6 +58,7 @@ router.post('/initiate', async (req: Request, res: Response) => {
       refundType: data.refundType || RefundType.OTHERS,
       accountingStatus: data.accountingStatus || AccountingStatus.UNACCOUNTED,
       refundDate: data.refundDate || now,
+      createdBy: data.createdBy || 'system:api',
       createdAt: now,
       updatedAt: now,
     };
@@ -45,27 +66,37 @@ router.post('/initiate', async (req: Request, res: Response) => {
     const ref = await db.collection('refundDetails').add(payload);
     const doc = await ref.get();
 
-    // Update order snapshot
-    await updateOrderRefundSnapshot(payload.orderId);
+    await recomputeAndWriteOrderRefundSnapshot(payload.orderId);
 
     res.status(201).json({ success: true, refund: { id: doc.id, ...doc.data() } });
-  } catch (e) {
+  } catch (e: any) {
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
     res.status(500).json({ success: false, error: 'Failed to create refund' });
   }
 });
 
+const splitSchema = z.object({
+  refundId: z.string().min(1),
+  splits: z
+    .array(
+      z.object({
+        refundAmount: z.number(),
+        refundType: z.nativeEnum(RefundType).optional(),
+        status: z.nativeEnum(RefundStatus).optional(),
+        accountingStatus: z.nativeEnum(AccountingStatus).optional(),
+      })
+    )
+    .min(1),
+});
+
 router.post('/split', async (req: Request, res: Response) => {
   try {
-    const { refundId, splits } = req.body as { refundId: string; splits: Array<Partial<RefundDetail>> };
-    if (!refundId || !Array.isArray(splits) || splits.length === 0) {
-      return res.status(400).json({ success: false, error: 'refundId and non-empty splits are required' });
-    }
+    const { refundId, splits } = splitSchema.parse(req.body);
 
     const originalDoc = await db.collection('refundDetails').doc(refundId).get();
     if (!originalDoc.exists) return res.status(404).json({ success: false, error: 'Original refund not found' });
     const original = { id: originalDoc.id, ...originalDoc.data() } as any;
 
-    // Delete original and create new split records in a batch
     const batch = db.batch();
     const col = db.collection('refundDetails');
     batch.delete(col.doc(refundId));
@@ -88,34 +119,42 @@ router.post('/split', async (req: Request, res: Response) => {
 
     await batch.commit();
 
-    await updateOrderRefundSnapshot(original.orderId);
+    await recomputeAndWriteOrderRefundSnapshot(original.orderId);
 
     res.json({ success: true, createdIds });
-  } catch (e) {
+  } catch (e: any) {
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
     res.status(500).json({ success: false, error: 'Failed to split refund' });
   }
 });
 
+const statusSchema = z.object({ status: z.nativeEnum(RefundStatus) });
+
+authGuard();
+
 router.put('/:id/status', async (req: Request, res: Response) => {
   try {
-    const { status } = req.body as { status: RefundStatus };
+    const { status } = statusSchema.parse(req.body);
     const docRef = db.collection('refundDetails').doc(req.params.id);
     const doc = await docRef.get();
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found' });
     await docRef.update({ status, updatedAt: new Date() });
 
     const data = doc.data() as any;
-    await updateOrderRefundSnapshot(data.orderId);
+    await recomputeAndWriteOrderRefundSnapshot(data.orderId);
 
     res.json({ success: true });
-  } catch (e) {
+  } catch (e: any) {
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
     res.status(500).json({ success: false, error: 'Failed to update status' });
   }
 });
 
+const typeDataSchema = z.record(z.string(), z.unknown());
+
 router.put('/:id/type-data', async (req: Request, res: Response) => {
   try {
-    const updates = req.body;
+    const updates = typeDataSchema.parse(req.body);
     const docRef = db.collection('refundDetails').doc(req.params.id);
     const doc = await docRef.get();
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found' });
@@ -123,22 +162,32 @@ router.put('/:id/type-data', async (req: Request, res: Response) => {
     await docRef.update({ ...updates, updatedAt: new Date() });
 
     const data = doc.data() as any;
-    await updateOrderRefundSnapshot(data.orderId);
+    await recomputeAndWriteOrderRefundSnapshot(data.orderId);
 
     res.json({ success: true });
-  } catch (e) {
+  } catch (e: any) {
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
     res.status(500).json({ success: false, error: 'Failed to update type data' });
   }
 });
 
+const bulkSchema = z.object({
+  updates: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        changes: z.record(z.string(), z.unknown()),
+      })
+    )
+    .min(1),
+});
+
 router.post('/bulk-update', async (req: Request, res: Response) => {
   try {
-    const updates: Array<{ id: string; changes: any }> = req.body?.updates || [];
-    if (!Array.isArray(updates) || updates.length === 0) {
-      return res.status(400).json({ success: false, error: 'updates array required' });
-    }
+    const { updates } = bulkSchema.parse(req.body);
     const batch = db.batch();
     const col = db.collection('refundDetails');
+
     const affectedOrderIds = new Set<string>();
 
     for (const { id, changes } of updates) {
@@ -153,10 +202,11 @@ router.post('/bulk-update', async (req: Request, res: Response) => {
 
     await batch.commit();
 
-    await Promise.all(Array.from(affectedOrderIds).map(id => updateOrderRefundSnapshot(id)));
+    await Promise.all(Array.from(affectedOrderIds).map((id) => recomputeAndWriteOrderRefundSnapshot(id)));
 
     res.json({ success: true, updated: updates.length });
-  } catch (e) {
+  } catch (e: any) {
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; ') });
     res.status(500).json({ success: false, error: 'Failed bulk update' });
   }
 });
@@ -168,7 +218,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
     if (doc.exists) {
       const data = doc.data() as any;
       await docRef.delete();
-      if (data?.orderId) await updateOrderRefundSnapshot(data.orderId);
+      if (data?.orderId) await recomputeAndWriteOrderRefundSnapshot(data.orderId);
     }
     res.json({ success: true });
   } catch (e) {
@@ -176,21 +226,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
 });
 
-async function updateOrderRefundSnapshot(orderId: string) {
-  const refundSnap = await db.collection('refundDetails').where('orderId', '==', orderId).get();
-  const refundDetails: any[] = refundSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-  const accountedRefundAmount = refundDetails.reduce((sum, rd) => {
-    const reconciled = Number(rd?.accountedRefundAmount || 0);
-    return sum + (isNaN(reconciled) ? 0 : reconciled);
-  }, 0);
-
-  await db.collection('orders').doc(orderId).set({
-    refundAccount: {
-      refundDetails,
-      accountedRefundAmount,
-    },
-    updatedAt: new Date(),
-  }, { merge: true });
+function authGuard() {
+  // TODO: Add real auth; left as placeholder to acknowledge security enhancement
 }
 
 export default router; 

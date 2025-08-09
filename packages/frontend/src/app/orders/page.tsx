@@ -11,6 +11,8 @@ export default function OrdersPage() {
   const [error, setError] = useState<string | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [limit] = useState(50);
   const [stats, setStats] = useState({
     total: 0,
     completed: 0,
@@ -21,8 +23,9 @@ export default function OrdersPage() {
 
   const fetchOrders = async () => {
     try {
+      setError(null);
       setLoading(true);
-      const response = await api.getOrders();
+      const response = await api.getOrders({ page, limit });
       if (response.success) {
         setOrders(response.orders);
         calculateStats(response.orders);
@@ -56,7 +59,7 @@ export default function OrdersPage() {
   useEffect(() => {
     fetchOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [page, limit]);
 
   const handleFileUpload = async () => {
     if (!uploadFile) return;
@@ -68,6 +71,8 @@ export default function OrdersPage() {
         alert(`Successfully imported ${response.results.successful} orders`);
         setUploadFile(null);
         fetchOrders();
+      } else {
+        alert('Upload failed');
       }
     } catch (err) {
       alert('Failed to upload Excel file');
@@ -89,14 +94,6 @@ export default function OrdersPage() {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-lg text-gray-600">Loading orders...</div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-lg text-red-600">{error}</div>
       </div>
     );
   }
@@ -128,7 +125,7 @@ export default function OrdersPage() {
               {formatCurrency(stats.totalRevenue)}
             </div>
           </div>
-          <div className="bg-white rounded-lg shadow p-6">
+          <div className={`bg-white rounded-lg shadow p-6`}>
             <div className="text-sm font-medium text-gray-500">Total Profit/Loss</div>
             <div className={`mt-2 text-xl font-bold ${stats.totalProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
               {formatCurrency(stats.totalProfit)}
@@ -164,11 +161,17 @@ export default function OrdersPage() {
               Refresh
             </button>
           </div>
+          {error && <div className="text-red-600 mt-4">{error}</div>}
         </div>
 
         <div className="bg-white rounded-lg shadow">
-          <div className="px-6 py-4 border-b border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
             <h2 className="text-lg font-semibold">Orders List</h2>
+            <div className="space-x-2">
+              <button className="px-3 py-1 rounded border" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>Prev</button>
+              <span className="text-sm">Page {page}</span>
+              <button className="px-3 py-1 rounded border" onClick={() => setPage((p) => p + 1)}>Next</button>
+            </div>
           </div>
           <OrdersTable orders={orders} />
         </div>
