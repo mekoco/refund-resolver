@@ -13,6 +13,8 @@ router.get('/', async (req: Request, res: Response) => {
     const ordersSnapshot = await db.collection('orders').get();
     const orders: Order[] = [];
     
+    console.log(`Fetching orders - found ${ordersSnapshot.size} documents`);
+    
     ordersSnapshot.forEach((doc: any) => {
       orders.push({ id: doc.id, ...doc.data() });
     });
@@ -47,10 +49,11 @@ router.post('/upload-excel', upload.single('file'), async (req: Request, res: Re
     
     console.log(`Parsed ${orders.length} orders from Excel file`);
     
-    const batch = db.batch();
+    let batch = db.batch();
     const ordersCollection = db.collection('orders');
     
     let count = 0;
+    let batchCount = 0;
     const batchSize = 500;
     const results = {
       total: orders.length,
@@ -61,24 +64,30 @@ router.post('/upload-excel', upload.single('file'), async (req: Request, res: Re
     
     for (const order of orders) {
       try {
-        const docRef = ordersCollection.doc(order.orderNo);
+        const docRef = ordersCollection.doc(order.orderId);
         batch.set(docRef, order);
+        batchCount++;
         count++;
         
-        if (count % batchSize === 0) {
+        if (batchCount === batchSize) {
+          console.log('Committing batch of', batchSize, 'orders');
           await batch.commit();
+          batch = db.batch(); // Create new batch after commit
+          batchCount = 0;
           results.successful = count;
         }
       } catch (error: any) {
         results.failed++;
-        results.errors.push(`Order ${order.orderNo}: ${error.message}`);
+        results.errors.push(`Order ${order.orderId}: ${error.message}`);
       }
     }
     
-    if (count % batchSize !== 0) {
+    if (batchCount > 0) {
+      console.log('Committing final batch with', batchCount, 'orders');
       await batch.commit();
       results.successful = count;
     }
+    
     
     fs.unlinkSync(req.file.path);
     
@@ -103,9 +112,9 @@ router.post('/upload-excel', upload.single('file'), async (req: Request, res: Re
   }
 });
 
-router.get('/:orderNo', async (req: Request, res: Response) => {
+router.get('/:orderId', async (req: Request, res: Response) => {
   try {
-    const doc = await db.collection('orders').doc(req.params.orderNo).get();
+    const doc = await db.collection('orders').doc(req.params.orderId).get();
     
     if (!doc.exists) {
       return res.status(404).json({

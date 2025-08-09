@@ -5,8 +5,8 @@ export interface OrderItem {
 }
 
 export interface Order {
-  id?: string;
-  orderNo: string;
+  id?: string; // Firestore document id (may mirror orderId)
+  orderId: string; // canonical order identifier (formerly orderNo)
   storeName: string;
   orderRevenue: number;
   items: OrderItem[];

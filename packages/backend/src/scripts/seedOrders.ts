@@ -22,7 +22,7 @@ async function seedOrders() {
     const batchSize = 500;
     
     for (const order of orders) {
-      const docRef = ordersCollection.doc(order.orderNo);
+      const docRef = ordersCollection.doc(order.orderId);
       batch.set(docRef, order);
       count++;
       
@@ -43,7 +43,7 @@ async function seedOrders() {
     const sampleOrders = orders.slice(0, 3);
     console.log('\nSample of seeded orders:');
     sampleOrders.forEach(order => {
-      console.log(`- Order ${order.orderNo}: ${order.items.length} items, Status: ${order.orderStatus}`);
+      console.log(`- Order ${order.orderId}: ${order.items.length} items, Status: ${order.orderStatus}`);
     });
     
   } catch (error) {

@@ -14,83 +14,28 @@ const initializeFirebase = () => {
     });
     console.log('Firebase initialized with service account');
   } else {
-    // Use local in-memory data for development
-    console.log('Firebase skipped - using in-memory data store for development');
+    // Initialize for local development with emulator
+    admin.initializeApp({
+      projectId: 'demo-test',
+    });
+    console.log('Firebase initialized for local development with emulator');
   }
 };
 
 initializeFirebase();
 
-// Create a mock db object for local development
-class MockFirestore {
-  private collections: Map<string, Map<string, any>> = new Map();
+// Get Firestore instance
+const db = admin.firestore();
 
-  collection(name: string) {
-    if (!this.collections.has(name)) {
-      this.collections.set(name, new Map());
-    }
-    const collectionData = this.collections.get(name)!;
-
-    return {
-      get: async () => {
-        const docs = Array.from(collectionData.entries()).map(([id, data]) => ({
-          id,
-          data: () => data,
-          exists: true
-        }));
-        return {
-          empty: docs.length === 0,
-          forEach: (callback: any) => docs.forEach(doc => callback(doc))
-        };
-      },
-      doc: (id?: string) => {
-        const docId = id || Math.random().toString(36).substring(7);
-        return {
-          get: async () => ({
-            id: docId,
-            exists: collectionData.has(docId),
-            data: () => collectionData.get(docId)
-          }),
-          set: async (data: any) => {
-            collectionData.set(docId, data);
-            return;
-          }
-        };
-      },
-      add: async (data: any) => {
-        const docId = Math.random().toString(36).substring(7);
-        collectionData.set(docId, data);
-        return {
-          id: docId,
-          get: async () => ({
-            id: docId,
-            data: () => data
-          })
-        };
-      }
-    };
-  }
-
-  batch() {
-    const operations: Array<() => void> = [];
-    return {
-      set: (docRef: any, data: any) => {
-        operations.push(() => {
-          const collection = this.collections.get(docRef.parent?.id || 'default');
-          if (collection) {
-            collection.set(docRef.id, data);
-          }
-        });
-      },
-      commit: async () => {
-        operations.forEach(op => op());
-      }
-    };
-  }
+// Connect to emulator in development
+if (process.env.NODE_ENV !== 'production') {
+  db.settings({
+    host: 'localhost:8080',
+    ssl: false
+  });
+  console.log('Connected to Firestore emulator at localhost:8080');
 }
 
-export const db = process.env.NODE_ENV === 'production' && process.env.FIREBASE_PROJECT_ID 
-  ? admin.firestore() 
-  : new MockFirestore() as any;
+export { db };
 
 export { admin };

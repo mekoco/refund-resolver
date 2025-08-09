@@ -13,7 +13,7 @@ async function testExcelRead() {
     
     orders.forEach((order, index) => {
       console.log(`\nOrder ${index + 1}:`);
-      console.log(`  Order No: ${order.orderNo}`);
+      console.log(`  Order Id: ${order.orderId}`);
       console.log(`  Store: ${order.storeName}`);
       console.log(`  Status: ${order.orderStatus}`);
       console.log(`  Revenue: $${order.orderRevenue.toFixed(2)}`);

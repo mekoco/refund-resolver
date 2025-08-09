@@ -93,7 +93,7 @@ export class OrderExcelReader {
   public convertToOrders(excelRows: ExcelOrderRow[]): Order[] {
     return excelRows.map(row => {
       const order: Order = {
-        orderNo: row['Order No'],
+        orderId: row['Order No'],
         storeName: row['BigSeller Store Name'],
         orderRevenue: this.parseNumber(row['Order Revenue']),
         items: this.parseOrderItems(row['Merchant SKU'], row['Sales Volume'], row['Gift']),

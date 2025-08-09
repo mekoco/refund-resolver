@@ -1,10 +1,13 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { seedDatabase } from './services/seedData';
 import { seedOrderDatabase } from './services/seedOrderData';
-import productsRouter from './routes/products';
 import ordersRouter from './routes/orders';
+import refundsRouter from './routes/refunds';
+import returnsRouter from './routes/returns';
+import reconciliationRouter from './routes/reconciliation';
+import skusRouter from './routes/skus';
+import staffRouter from './routes/staff';
 
 dotenv.config();
 
@@ -25,18 +28,20 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-app.use('/api/products', productsRouter);
 app.use('/api/orders', ordersRouter);
+app.use('/api/refunds', refundsRouter);
+app.use('/api/returns', returnsRouter);
+app.use('/api/reconciliation', reconciliationRouter);
+app.use('/api/skus', skusRouter);
+app.use('/api/staff', staffRouter);
 
 const startServer = async () => {
   try {
-    await seedDatabase();
     await seedOrderDatabase();
     
     app.listen(PORT, () => {
       console.log(`Backend server running on http://localhost:${PORT}`);
       console.log(`Health check: http://localhost:${PORT}/api/health`);
-      console.log(`Products API: http://localhost:${PORT}/api/products`);
       console.log(`Orders API: http://localhost:${PORT}/api/orders`);
     });
   } catch (error) {

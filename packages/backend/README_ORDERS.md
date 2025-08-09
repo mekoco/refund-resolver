@@ -5,7 +5,7 @@ The backend now supports importing order data from Excel files with a specific f
 
 ## Excel File Format
 The Excel file should have the following columns:
-- Order No
+- Order Id
 - BigSeller Store Name
 - Order Revenue
 - Merchant SKU (supports multiple SKUs separated by newlines)
@@ -56,12 +56,12 @@ const orders = await reader.readAndConvertOrders('path/to/excel.xlsx');
 ## API Endpoints
 
 - `GET /api/orders` - Get all orders
-- `GET /api/orders/:orderNo` - Get specific order
+- `GET /api/orders/:orderId` - Get specific order
 - `POST /api/orders/upload-excel` - Upload Excel file to import orders
 
 ## Type Definition
 Orders are stored with the following structure (defined in `packages/shared/src/types/order.ts`):
-- Order details (orderNo, storeName, revenue, etc.)
+- Order details (orderId, storeName, revenue, etc.)
 - Order items array (SKU, volume, gift status)
 - Financial details (costs, fees, profit/loss)
 - Timestamps (order, confirm, release, update, completed)
