@@ -31,6 +31,9 @@ describe('Voids fully-accounted state when order refund total decreases', () => 
     fd.append('file', buf, { filename: 'orders.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const res = await api.post('/orders/upload-excel', fd, { headers: fd.getHeaders() });
     expect(res.data.success).toBe(true);
+
+    const created = await api.get(`/orders/${orderId}`);
+    expect(created.data.order?.refundAccount?.accountStatus).toBe('UNINITIATED');
   });
 
   afterAll(async () => {
@@ -61,6 +64,7 @@ describe('Voids fully-accounted state when order refund total decreases', () => 
     const expected = Number(order.data.order?.buyerRefundAmount || 0);
     expect(accounted).toBeGreaterThanOrEqual(500);
     expectAmountsClose(accounted, expected);
+    expect(order.data.order?.refundAccount?.accountStatus).toBe('FULLY_ACCOUNTED');
   });
 
   it('decreases order buyerRefundAmount via Excel and voids fully-accounted state', async () => {
@@ -82,5 +86,6 @@ describe('Voids fully-accounted state when order refund total decreases', () => 
     expect(accounted).toBeGreaterThanOrEqual(500);
     expect(expected).toBe(350);
     expectAmountsNotClose(accounted, expected);
+    expect(order.data.order?.refundAccount?.accountStatus).toBe('PARTIALLY_ACCOUNTED');
   });
 }); 

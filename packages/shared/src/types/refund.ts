@@ -1,6 +1,13 @@
 export interface RefundAccounting {
   refundDetails: RefundDetail[];
   accountedRefundAmount: number;
+  accountStatus: AccountStatus;
+}
+
+export enum AccountStatus {
+  UNINITIATED = 'UNINITIATED',
+  PARTIALLY_ACCOUNTED = 'PARTIALLY_ACCOUNTED',
+  FULLY_ACCOUNTED = 'FULLY_ACCOUNTED'
 }
 
 export interface RefundDetail {

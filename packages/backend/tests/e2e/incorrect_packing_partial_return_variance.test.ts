@@ -30,6 +30,9 @@ describe('Workflow: INCORRECT_PACKING partial return variance', () => {
     fd.append('file', buf, { filename: 'orders.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const res = await api.post('/orders/upload-excel', fd, { headers: fd.getHeaders() });
     expect(res.data.success).toBe(true);
+
+    const created = await api.get(`/orders/${orderId}`);
+    expect(created.data.order?.refundAccount?.accountStatus).toBe('UNINITIATED');
   });
 
   afterAll(async () => {
@@ -80,5 +83,6 @@ describe('Workflow: INCORRECT_PACKING partial return variance', () => {
     const accounted = Number(order.data.order?.refundAccount?.accountedRefundAmount || 0);
     expect(accounted).toBeGreaterThanOrEqual(500);
     expect(accounted).toBeLessThan(600);
+    expect(order.data.order?.refundAccount?.accountStatus).toBe('PARTIALLY_ACCOUNTED');
   });
 }); 

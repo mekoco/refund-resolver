@@ -5,7 +5,7 @@
     },
     "ui": {
       "enabled": true,
-      "port": 4000
+      "port": 4040
     },
     "singleProjectMode": false,
     "auth": {

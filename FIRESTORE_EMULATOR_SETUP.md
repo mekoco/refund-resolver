@@ -35,7 +35,7 @@ Create a `firebase.json` file in your project root:
     },
     "ui": {
       "enabled": true,
-      "port": 4000
+      "port": 4040
     },
     "singleProjectMode": false,
     "auth": {
@@ -62,10 +62,10 @@ firebase emulators:start --project=demo-test
 
 Once running, you can access:
 
-- **Emulator UI**: http://127.0.0.1:4000/
-- **Firestore**: http://127.0.0.1:4000/firestore
-- **Authentication**: http://127.0.0.1:4000/auth
-- **Storage**: http://127.0.0.1:4000/storage
+- **Emulator UI**: http://127.0.0.1:4040/
+- **Firestore**: http://127.0.0.1:4040/firestore
+- **Authentication**: http://127.0.0.1:4040/auth
+- **Storage**: http://127.0.0.1:4040/storage
 
 ## Available Services
 

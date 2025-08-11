@@ -5,7 +5,8 @@ import { OrderExcelReader } from '../utils/orderExcelReader';
 import { Order, AccountingStatus, RefundStatus, RefundType } from '@packages/shared';
 import * as fs from 'fs';
 import { z, ZodIssue } from 'zod';
-import { recomputeAndWriteOrderRefundSnapshot, validateRefundDetailsSumEqualsOrder } from '../utils/snapshot';
+import { recomputeAndWriteOrderRefundSnapshot, validateRefundDetailsSumEqualsOrder, ACCOUNTING_EPSILON } from '../utils/snapshot';
+import { OrderDoc } from '../types/firestore';
 
 const router = Router();
 
@@ -33,10 +34,11 @@ router.get('/', async (req: Request, res: Response) => {
 
     // Prefer cursor-based pagination when provided
     if (cursor) {
-      const cursorDoc = await db.collection('orders').doc(cursor).get();
+      const safeCursor = String(cursor).trim();
+      const cursorDoc = await db.collection('orders').doc(safeCursor).get();
       if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor', code: 'INVALID_CURSOR' });
       const snap = await baseQuery.startAfter(cursorDoc).limit(limit).get();
-      const orders: Order[] = snap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+      const orders: Order[] = snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as OrderDoc) })) as Order[];
       const nextCursor = orders.length === limit ? snap.docs[snap.docs.length - 1].id : null;
       return res.json({ success: true, count: orders.length, orders, page, limit, nextCursor });
     }
@@ -44,7 +46,7 @@ router.get('/', async (req: Request, res: Response) => {
     // First page without cursor
     if (page === 1) {
       const snap = await baseQuery.limit(limit).get();
-      const orders: Order[] = snap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+      const orders: Order[] = snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as OrderDoc) })) as Order[];
       const nextCursor = orders.length === limit ? snap.docs[snap.docs.length - 1].id : null;
       return res.json({ success: true, count: orders.length, orders, page, limit, nextCursor });
     }
@@ -61,6 +63,7 @@ const refundAccountingSchema = z
   .object({
     refundDetails: z.array(z.any()).optional(),
     accountedRefundAmount: z.number().nonnegative().default(0),
+    accountStatus: z.enum(['UNINITIATED', 'PARTIALLY_ACCOUNTED', 'FULLY_ACCOUNTED']).optional(),
   })
   .strict();
 
@@ -139,10 +142,10 @@ router.post('/upload-excel', upload.single('file'), async (req: Request, res: Re
           const now = new Date();
 
           if (existingDoc.exists) {
-            const existing = existingDoc.data() as Order;
+            const existing = existingDoc.data() as OrderDoc;
             const oldAmount = Number(existing?.buyerRefundAmount || 0);
             const newAmount = Number(order.buyerRefundAmount || 0);
-            if (newAmount !== oldAmount) {
+            if (Math.abs(newAmount - oldAmount) >= ACCOUNTING_EPSILON) {
               const difference = newAmount - oldAmount;
               const rdRef = db.collection('refundDetails').doc();
               tx.set(rdRef, {
@@ -164,7 +167,7 @@ router.post('/upload-excel', upload.single('file'), async (req: Request, res: Re
 
         // Recompute snapshot and validate sums per business rules
         await recomputeAndWriteOrderRefundSnapshot(order.orderId);
-        await validateRefundDetailsSumEqualsOrder(order.orderId);
+        await validateRefundDetailsSumEqualsOrder(order.orderId, ACCOUNTING_EPSILON);
         results.successful++;
       } catch (error: any) {
         results.failed++;
@@ -184,13 +187,15 @@ router.post('/upload-excel', upload.single('file'), async (req: Request, res: Re
 
 router.get('/:orderId', async (req: Request, res: Response) => {
   try {
-    const doc = await db.collection('orders').doc(req.params.orderId).get();
+    const orderId = String(req.params.orderId || '').trim();
+    if (!orderId) return res.status(400).json({ success: false, error: 'Invalid orderId', code: 'INVALID_ID' });
+    const doc = await db.collection('orders').doc(orderId).get();
 
     if (!doc.exists) {
       return res.status(404).json({ success: false, error: 'Order not found', code: 'ORDER_NOT_FOUND' });
     }
 
-    res.json({ success: true, order: { id: doc.id, ...doc.data() } });
+    res.json({ success: true, order: { id: doc.id, ...(doc.data() as OrderDoc) } as Order });
   } catch (error) {
     console.error('Error fetching order:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch order', code: 'ORDER_GET_ERROR' });

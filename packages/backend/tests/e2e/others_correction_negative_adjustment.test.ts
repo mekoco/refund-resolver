@@ -30,6 +30,9 @@ describe('Workflow: OTHERS negative correction adjustments', () => {
     const res1 = await api.post('/orders/upload-excel', fd1, { headers: fd1.getHeaders() });
     expect(res1.data.success).toBe(true);
 
+    const created = await api.get(`/orders/${orderId}`);
+    expect(created.data.order?.refundAccount?.accountStatus).toBe('UNINITIATED');
+
     // Second upload at 300 triggers auto refundDetail of -100
     const buf2 = buildOrdersExcel([
       buildOrderRow({ orderId, buyerRefundAmount: 300, items: [{ sku: 'SKU-F', qty: 2 }] }),

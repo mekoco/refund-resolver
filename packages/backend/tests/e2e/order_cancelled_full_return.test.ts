@@ -30,6 +30,10 @@ describe('Workflow: ORDER_CANCELLED full return matched', () => {
     fd.append('file', buf, { filename: 'orders.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const res = await api.post('/orders/upload-excel', fd, { headers: fd.getHeaders() });
     expect(res.data.success).toBe(true);
+
+    const created = await api.get(`/orders/${orderId}`);
+    expect(created.data.success).toBe(true);
+    expect(created.data.order?.refundAccount?.accountStatus).toBe('UNINITIATED');
   });
 
   afterAll(async () => {
@@ -83,5 +87,6 @@ describe('Workflow: ORDER_CANCELLED full return matched', () => {
     expect(order.data.success).toBe(true);
     const accounted = Number(order.data.order?.refundAccount?.accountedRefundAmount || 0);
     expect(accounted).toBeGreaterThanOrEqual(1000);
+    expect(order.data.order?.refundAccount?.accountStatus).toBe('FULLY_ACCOUNTED');
   });
 }); 

@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../config/firebase';
-import { ReturnItem, ReturnStatus, ItemCondition } from '@packages/shared';
+import { ReturnStatus, ItemCondition } from '@packages/shared';
 import { z } from 'zod';
 import { recomputeAndWriteOrderRefundSnapshot } from '../utils/snapshot';
+import { RefundDetailDoc, ReturnIndexDoc, ReturnTrackingDoc, ReturnItemDoc } from '../types/firestore';
 
 const router = Router();
 
@@ -22,14 +23,14 @@ router.get('/', async (req: Request, res: Response) => {
       const cursorDoc = await db.collection('returns').doc(cursor).get();
       if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor', code: 'INVALID_CURSOR' });
       const snap = await base.startAfter(cursorDoc).limit(limit).get();
-      const returns = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const returns = snap.docs.map((d) => ({ id: d.id, ...(d.data() as ReturnIndexDoc) }));
       const nextCursor = returns.length === limit ? snap.docs[snap.docs.length - 1].id : null;
       return res.json({ success: true, count: returns.length, returns, page, limit, nextCursor });
     }
 
     if (page === 1) {
       const snap = await base.limit(limit).get();
-      const returns = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const returns = snap.docs.map((d) => ({ id: d.id, ...(d.data() as ReturnIndexDoc) }));
       const nextCursor = returns.length === limit ? snap.docs[snap.docs.length - 1].id : null;
       return res.json({ success: true, count: returns.length, returns, page, limit, nextCursor });
     }
@@ -45,7 +46,7 @@ router.get('/:id', async (req: Request, res: Response) => {
   try {
     const doc = await db.collection('returns').doc(req.params.id).get();
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'RETURN_NOT_FOUND' });
-    res.json({ success: true, return: { id: doc.id, ...doc.data() } });
+    res.json({ success: true, return: { id: doc.id, ...(doc.data() as ReturnIndexDoc) } });
   } catch (e) {
     console.error('RETURN_GET_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to get return', code: 'RETURN_GET_ERROR' });
@@ -63,7 +64,7 @@ router.get('/pending', async (req: Request, res: Response) => {
       if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor', code: 'INVALID_CURSOR' });
       const snap = await base.startAfter(cursorDoc).limit(limit).get();
       const docs = snap.docs;
-      const items = docs.map((d) => ({ id: d.id, ...d.data() }));
+      const items = docs.map((d) => ({ id: d.id, ...(d.data() as ReturnIndexDoc) }));
       const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
       return res.json({ success: true, count: items.length, items, page, limit, nextCursor });
     }
@@ -71,7 +72,7 @@ router.get('/pending', async (req: Request, res: Response) => {
     if (page === 1) {
       const snap = await base.limit(limit).get();
       const docs = snap.docs;
-      const items = docs.map((d) => ({ id: d.id, ...d.data() }));
+      const items = docs.map((d) => ({ id: d.id, ...(d.data() as ReturnIndexDoc) }));
       const nextCursor = docs.length === limit ? docs[docs.length - 1].id : null;
       return res.json({ success: true, count: items.length, items, page, limit, nextCursor });
     }
@@ -108,17 +109,17 @@ router.post('/initiate', async (req: Request, res: Response) => {
     const rdRef = db.collection('refundDetails').doc(refundDetailId);
     const rdDoc = await rdRef.get();
     if (!rdDoc.exists) return res.status(404).json({ success: false, error: 'RefundDetail not found', code: 'REFUND_DETAIL_NOT_FOUND' });
-    const rd = { id: rdDoc.id, ...rdDoc.data() } as any;
+    const rd = rdDoc.data() as RefundDetailDoc;
 
     const now = new Date();
     const newReturnId = db.collection('returns').doc().id;
     const totalReturnValue = (returnItems || []).reduce((s, it) => s + Number(it.quantity || 0) * Number(it.unitPrice || 0), 0);
 
-    const returnTracking: any = {
+    const returnTracking: ReturnTrackingDoc = {
       id: newReturnId,
       returnInitiatedDate: now,
       returnStatus: ReturnStatus.PENDING,
-      returnItems,
+      returnItems: returnItems as unknown as ReturnItemDoc[],
       totalReturnValue,
       ...(expectedReturnDate ? { expectedReturnDate } : {}),
       ...(typeof reason === 'string' && reason.length > 0 ? { reason } : {}),
@@ -135,7 +136,7 @@ router.post('/initiate', async (req: Request, res: Response) => {
       totalReturnValue,
       createdAt: now,
       updatedAt: now,
-    });
+    } as ReturnIndexDoc);
 
     await recomputeAndWriteOrderRefundSnapshot(rd.orderId);
 
@@ -160,13 +161,13 @@ async function updateReturnStatus(req: Request, res: Response, status: ReturnSta
     const idxDoc = await db.collection('returns').doc(returnId).get();
     if (!idxDoc.exists) return res.status(404).json({ success: false, error: 'Return not found', code: 'RETURN_NOT_FOUND' });
 
-    const { refundDetailId, orderId } = idxDoc.data() as any;
+    const { refundDetailId, orderId } = idxDoc.data() as ReturnIndexDoc;
     const rdRef = db.collection('refundDetails').doc(refundDetailId);
     const rdDoc = await rdRef.get();
     if (!rdDoc.exists) return res.status(404).json({ success: false, error: 'RefundDetail not found', code: 'REFUND_DETAIL_NOT_FOUND' });
 
-    const rd = rdDoc.data() as any;
-    const updated = (rd.returnTrackings || []).map((rt: any) =>
+    const rd = rdDoc.data() as RefundDetailDoc;
+    const updated = (rd.returnTrackings || []).map((rt) =>
       rt.id === returnId
         ? { ...rt, returnStatus: status, updatedAt: new Date(), actualReturnDate: status === ReturnStatus.RECEIVED ? new Date() : rt.actualReturnDate }
         : rt
