@@ -19,7 +19,8 @@ router.get('/', async (req: Request, res: Response) => {
     const baseQuery = db.collection('refundDetails').orderBy('updatedAt', 'desc');
 
     if (cursor) {
-      const cursorDoc = await db.collection('refundDetails').doc(cursor).get();
+      const safeCursor = String(cursor).trim();
+      const cursorDoc = await db.collection('refundDetails').doc(safeCursor).get();
       if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor', code: 'INVALID_CURSOR' });
       const snap = await baseQuery.startAfter(cursorDoc).limit(limit).get();
       const refunds = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -43,7 +44,9 @@ router.get('/', async (req: Request, res: Response) => {
 
 router.get('/:id', async (req: Request, res: Response) => {
   try {
-    const doc = await db.collection('refundDetails').doc(req.params.id).get();
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ success: false, error: 'Invalid id', code: 'INVALID_ID' });
+    const doc = await db.collection('refundDetails').doc(id).get();
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
     res.json({ success: true, refund: { id: doc.id, ...doc.data() } });
   } catch (e) {
@@ -56,8 +59,10 @@ router.get('/:id', async (req: Request, res: Response) => {
 const updateStatusSchema = z.object({ status: z.nativeEnum(RefundStatus) });
 router.put('/:id/status', async (req: Request, res: Response) => {
   try {
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ success: false, error: 'Invalid id', code: 'INVALID_ID' });
     const { status } = updateStatusSchema.parse(req.body);
-    const ref = db.collection('refundDetails').doc(req.params.id);
+    const ref = db.collection('refundDetails').doc(id);
     const doc = await ref.get();
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
     const now = new Date();
@@ -225,7 +230,9 @@ const typeDataSchema = z.object({
 router.put('/:id/type-data', async (req: Request, res: Response) => {
   try {
     const updates = typeDataSchema.parse(req.body);
-    const docRef = db.collection('refundDetails').doc(req.params.id);
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ success: false, error: 'Invalid id', code: 'INVALID_ID' });
+    const docRef = db.collection('refundDetails').doc(id);
     const doc = await docRef.get();
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
 
@@ -286,14 +293,36 @@ router.post('/bulk-update', async (req: Request, res: Response) => {
     const affectedOrderIds = new Set<string>();
 
     const now = new Date();
+
+    // Firestore limits ~500 ops per batch
+    const BATCH_LIMIT = 450;
+    let batch = db.batch();
+    let opsInBatch = 0;
+
+    const commitIfNeeded = async () => {
+      if (opsInBatch > 0) {
+        await batch.commit();
+        batch = db.batch();
+        opsInBatch = 0;
+      }
+    };
+
     for (const payload of updates) {
-      const ref = col.doc(payload.id);
+      const id = String(payload.id).trim();
+      if (!id) continue;
+      const ref = col.doc(id);
       const doc = await ref.get();
       if (!doc.exists) continue;
       const data = doc.data() as any;
       if (data?.orderId) affectedOrderIds.add(data.orderId);
-      await ref.update({ ...payload.changes, updatedAt: now });
+      batch.update(ref, { ...payload.changes, updatedAt: now });
+      opsInBatch++;
+      if (opsInBatch >= BATCH_LIMIT) {
+        await commitIfNeeded();
+      }
     }
+
+    await commitIfNeeded();
 
     await Promise.all(Array.from(affectedOrderIds).map((id) => recomputeAndWriteOrderRefundSnapshot(id)));
 
@@ -314,7 +343,9 @@ router.post('/bulk-update', async (req: Request, res: Response) => {
 
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
-    const ref = db.collection('refundDetails').doc(req.params.id);
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ success: false, error: 'Invalid id', code: 'INVALID_ID' });
+    const ref = db.collection('refundDetails').doc(id);
     const doc = await ref.get();
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
 
