@@ -21,7 +21,7 @@ FRONTEND_PID=$!
 sleep 5
 
 echo "Testing frontend..."
-curl -s http://localhost:3000 > /tmp/frontend-test.html
+curl -s http://localhost:3040 > /tmp/frontend-test.html
 if grep -q "Product Catalog" /tmp/frontend-test.html; then
     echo "✓ Frontend is rendering correctly"
 else
