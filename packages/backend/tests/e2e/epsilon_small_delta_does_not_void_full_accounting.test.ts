@@ -71,5 +71,6 @@ describe('Small delta (< epsilon) does not void fully-accounted state', () => {
     const expected = Number(order.data.order?.buyerRefundAmount || 0);
     // Difference is 0.005, below epsilon 0.01
     expectAmountsClose(accounted, expected);
+    expect(order.data.order?.refundAccount?.accountStatus).toBe('FULLY_ACCOUNTED');
   });
 }); 

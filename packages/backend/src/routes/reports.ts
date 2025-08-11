@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../config/firebase';
-import { RefundType, AccountingStatus, ReturnStatus } from '@packages/shared';
+import { RefundType, AccountingStatus, ReturnStatus, AccountStatus } from '@packages/shared';
 import { z } from 'zod';
 
 const router = Router();
@@ -54,7 +54,8 @@ router.get('/accounting-status', async (req: Request, res: Response) => {
 
     for (const o of orders) {
       const refundAccount = o.refundAccount || {};
-      const accountingStatus: AccountingStatus = inferOrderAccountingStatus(refundAccount);
+      // Prefer embedded field if present
+      const accountingStatus: AccountStatus = refundAccount.accountStatus || deriveAccountStatus(refundAccount);
       const total = Number(o?.buyerRefundAmount || 0);
       if (!statusTotals[accountingStatus]) statusTotals[accountingStatus] = { amount: 0, count: 0 };
       statusTotals[accountingStatus].amount += total;
@@ -140,19 +141,15 @@ router.get('/financial-impact', async (req: Request, res: Response) => {
   }
 });
 
-function inferOrderAccountingStatus(refundAccount: any): AccountingStatus {
+function deriveAccountStatus(refundAccount: any): AccountStatus {
   const details: any[] = Array.isArray(refundAccount?.refundDetails) ? refundAccount.refundDetails : [];
-  if (details.length === 0) return AccountingStatus.UNACCOUNTED;
+  if (details.length === 0) return AccountStatus.UNINITIATED;
 
   const hasLost = details.some((d) => (d.returnTrackings || []).some((rt: any) => rt.returnStatus === ReturnStatus.LOST_BY_COURIER));
-  if (hasLost) return AccountingStatus.PARTIALLY_ACCOUNTED;
+  if (hasLost) return AccountStatus.PARTIALLY_ACCOUNTED;
 
-  const totalRefund = details.reduce((s, d) => s + Number(d.refundAmount || 0), 0);
-  const accounted = Number(refundAccount?.accountedRefundAmount || 0);
-
-  if (Math.abs(accounted - totalRefund) < 0.01) return AccountingStatus.FULLY_ACCOUNTED;
-  if (accounted > 0) return AccountingStatus.PARTIALLY_ACCOUNTED;
-  return AccountingStatus.UNACCOUNTED;
+  const allFully = details.every((d) => d.accountingStatus === AccountingStatus.FULLY_ACCOUNTED);
+  return allFully ? AccountStatus.FULLY_ACCOUNTED : AccountStatus.PARTIALLY_ACCOUNTED;
 }
 
 export default router; 

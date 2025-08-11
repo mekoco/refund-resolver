@@ -61,6 +61,7 @@ const refundAccountingSchema = z
   .object({
     refundDetails: z.array(z.any()).optional(),
     accountedRefundAmount: z.number().nonnegative().default(0),
+    accountStatus: z.enum(['UNINITIATED', 'PARTIALLY_ACCOUNTED', 'FULLY_ACCOUNTED']).optional(),
   })
   .strict();
 
@@ -142,7 +143,7 @@ router.post('/upload-excel', upload.single('file'), async (req: Request, res: Re
             const existing = existingDoc.data() as Order;
             const oldAmount = Number(existing?.buyerRefundAmount || 0);
             const newAmount = Number(order.buyerRefundAmount || 0);
-            if (newAmount !== oldAmount) {
+            if (Math.abs(newAmount - oldAmount) >= 0.01) {
               const difference = newAmount - oldAmount;
               const rdRef = db.collection('refundDetails').doc();
               tx.set(rdRef, {

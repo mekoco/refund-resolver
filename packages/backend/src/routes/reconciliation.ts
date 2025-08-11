@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../config/firebase';
-import { ReconciliationStatus } from '@packages/shared';
+import { ReconciliationStatus, AccountingStatus } from '@packages/shared';
 import { recomputeAndWriteOrderRefundSnapshot } from '../utils/snapshot';
 
 const router = Router();
@@ -43,6 +43,14 @@ router.post('/:refundId/reconcile', async (req: Request, res: Response) => {
 
     const refundDoc = await db.collection('refundDetails').doc(req.params.refundId).get();
     const refund = refundDoc.data() as any;
+    // Update refundDetails.accountingStatus based on reconciliation outcome
+    if (refundDoc.exists) {
+      const rdRef = db.collection('refundDetails').doc(req.params.refundId);
+      let accountingStatus: AccountingStatus | undefined;
+      if (status === ReconciliationStatus.MATCHED) accountingStatus = AccountingStatus.FULLY_ACCOUNTED;
+      else if (status === ReconciliationStatus.VARIANCE_FOUND) accountingStatus = AccountingStatus.PARTIALLY_ACCOUNTED;
+      if (accountingStatus) await rdRef.update({ accountingStatus, updatedAt: new Date() });
+    }
     if (refund?.orderId) {
       await recomputeAndWriteOrderRefundSnapshot(refund.orderId);
     }

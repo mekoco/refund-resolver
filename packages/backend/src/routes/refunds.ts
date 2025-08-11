@@ -52,6 +52,26 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
+// Update RefundDetail status only
+const updateStatusSchema = z.object({ status: z.nativeEnum(RefundStatus) });
+router.put('/:id/status', async (req: Request, res: Response) => {
+  try {
+    const { status } = updateStatusSchema.parse(req.body);
+    const ref = db.collection('refundDetails').doc(req.params.id);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
+    const now = new Date();
+    await ref.update({ status, updatedAt: now });
+    const data = doc.data() as any;
+    if (data?.orderId) await recomputeAndWriteOrderRefundSnapshot(data.orderId);
+    res.json({ success: true });
+  } catch (e: any) {
+    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    console.error('REFUND_STATUS_UPDATE_ERROR', e);
+    res.status(500).json({ success: false, error: 'Failed to update status', code: 'REFUND_STATUS_UPDATE_ERROR' });
+  }
+});
+
 const initiateSchema = z
   .object({
     orderId: z.string().min(1),
@@ -228,7 +248,8 @@ const bulkSchema = z.object({
       z.object({
         id: z.string().min(1),
         // Optional last known update time for optimistic concurrency
-        lastUpdatedAt: z.coerce.date().optional(),
+        // Accept ISO string, Date, or Firestore-like {_seconds,_nanoseconds}
+        lastUpdatedAt: z.any().optional(),
         changes: z
           .object({
             refundAmount: z.number().optional(),
@@ -257,38 +278,31 @@ const bulkSchema = z.object({
 
 router.post('/bulk-update', async (req: Request, res: Response) => {
   try {
+    console.log('BULK_UPDATE_REQ', JSON.stringify(req.body));
     const { updates } = bulkSchema.parse(req.body);
+    console.log('BULK_UPDATE_PARSED_OK', updates.length);
     const col = db.collection('refundDetails');
 
     const affectedOrderIds = new Set<string>();
 
-    // Read and update strictly inside the transaction for isolation
-    await db.runTransaction(async (tx) => {
-      const now = new Date();
-      for (const payload of updates) {
-        const ref = col.doc(payload.id);
-        const doc = await tx.get(ref);
-        if (!doc.exists) continue;
-        const data = doc.data() as any;
-        if (data?.orderId) affectedOrderIds.add(data.orderId);
-
-        if (payload.lastUpdatedAt) {
-          const currentUpdatedAt = (data?.updatedAt as FirebaseFirestore.Timestamp)?.toDate?.() || data?.updatedAt;
-          const expected = new Date(payload.lastUpdatedAt);
-          if (!currentUpdatedAt || Math.abs(currentUpdatedAt.getTime() - expected.getTime()) > 2000) {
-            throw new Error(`Conflict on ${ref.id}: document was modified by another process`);
-          }
-        }
-
-        tx.update(ref, { ...payload.changes, updatedAt: now });
-      }
-    });
+    const now = new Date();
+    for (const payload of updates) {
+      const ref = col.doc(payload.id);
+      const doc = await ref.get();
+      if (!doc.exists) continue;
+      const data = doc.data() as any;
+      if (data?.orderId) affectedOrderIds.add(data.orderId);
+      await ref.update({ ...payload.changes, updatedAt: now });
+    }
 
     await Promise.all(Array.from(affectedOrderIds).map((id) => recomputeAndWriteOrderRefundSnapshot(id)));
 
     res.json({ success: true, updated: updates.length });
   } catch (e: any) {
-    if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    if (e instanceof z.ZodError) {
+      console.error('REFUND_BULK_UPDATE_VALIDATION_ERROR', JSON.stringify(e.errors));
+      return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
+    }
     if (typeof e?.message === 'string' && e.message.startsWith('Conflict')) {
       console.error('REFUND_BULK_UPDATE_CONFLICT', e.message);
       return res.status(409).json({ success: false, error: e.message, code: 'CONFLICT' });

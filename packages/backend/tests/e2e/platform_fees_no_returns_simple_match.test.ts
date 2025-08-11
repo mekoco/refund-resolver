@@ -26,6 +26,9 @@ describe('Workflow: PLATFORM_FEES reconcile without returns', () => {
     fd.append('file', buf, { filename: 'orders.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const res = await api.post('/orders/upload-excel', fd, { headers: fd.getHeaders() });
     expect(res.data.success).toBe(true);
+
+    const created = await api.get(`/orders/${orderId}`);
+    expect(created.data.order?.refundAccount?.accountStatus).toBe('UNINITIATED');
   });
 
   afterAll(async () => {
@@ -53,5 +56,6 @@ describe('Workflow: PLATFORM_FEES reconcile without returns', () => {
     const order = await api.get(`/orders/${orderId}`);
     const accounted = Number(order.data.order?.refundAccount?.accountedRefundAmount || 0);
     expect(accounted).toBeGreaterThanOrEqual(150);
+    expect(order.data.order?.refundAccount?.accountStatus).toBe('FULLY_ACCOUNTED');
   });
 }); 

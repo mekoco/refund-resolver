@@ -85,5 +85,6 @@ describe('Voids fully-accounted state when order refund total changes', () => {
     expect(accounted).toBeGreaterThanOrEqual(500);
     expect(expected).toBe(800);
     expectAmountsNotClose(accounted, expected);
+    expect(order.data.order?.refundAccount?.accountStatus).toBe('PARTIALLY_ACCOUNTED');
   });
 }); 

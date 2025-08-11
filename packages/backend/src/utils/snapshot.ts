@@ -1,4 +1,5 @@
 import { db } from '../config/firebase';
+import { AccountingStatus, AccountStatus } from '@packages/shared';
 
 export async function recomputeAndWriteOrderRefundSnapshot(orderId: string): Promise<void> {
   const refundSnap = await db
@@ -52,10 +53,17 @@ export async function recomputeAndWriteOrderRefundSnapshot(orderId: string): Pro
     return sum + (isNaN(actualValue) ? 0 : actualValue);
   }, 0);
 
+  // Compute accountStatus
+  let accountStatus: AccountStatus = AccountStatus.UNINITIATED;
+  if (refundDetails.length > 0) {
+    const allFully = refundDetails.every((rd) => rd.accountingStatus === AccountingStatus.FULLY_ACCOUNTED);
+    accountStatus = allFully ? AccountStatus.FULLY_ACCOUNTED : AccountStatus.PARTIALLY_ACCOUNTED;
+  }
+
   await db
     .collection('orders')
     .doc(orderId)
-    .set({ refundAccount: { accountedRefundAmount } }, { merge: true });
+    .set({ refundAccount: { accountedRefundAmount, accountStatus } }, { merge: true });
 }
 
 // Computes the sum of refundAmount across all RefundDetails for a given order
