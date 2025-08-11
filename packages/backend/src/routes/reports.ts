@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { db } from '../config/firebase';
 import { RefundType, AccountingStatus, ReturnStatus, AccountStatus } from '@packages/shared';
 import { z } from 'zod';
+import { RefundDetailDoc, OrderDoc, RefundReconciliationDoc } from '../types/firestore';
 
 const router = Router();
 
@@ -22,18 +23,25 @@ router.get('/refund-summary', async (req: Request, res: Response) => {
     if (startDate) query = query.where('refundDate', '>=', startDate);
     if (endDate) query = query.where('refundDate', '<=', endDate);
     const snap = await query.limit(limit).get();
-    const details = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+    const details = snap.docs.map((d) => ({ id: d.id, ...(d.data() as RefundDetailDoc) }));
 
     const totalAmount = details.reduce((s, d) => s + Number(d.refundAmount || 0), 0);
     const byType: Record<string, number> = {};
     for (const d of details) {
-      const t = d.refundType || 'UNKNOWN';
+      const t = (d as RefundDetailDoc).refundType || 'UNKNOWN';
       byType[t] = (byType[t] || 0) + Number(d.refundAmount || 0);
     }
 
     res.json({ success: true, totalAmount, byType, count: details.length });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to build refund summary' });
+    const traceId = `REP_SUM_${Date.now()}`;
+    console.error('REPORTS_REFUND_SUMMARY_ERROR', {
+      traceId,
+      query: req.query,
+      errorMessage: (e as Error).message,
+      stack: (e as Error).stack,
+    });
+    res.status(500).json({ success: false, error: 'Failed to build refund summary', code: 'REPORTS_REFUND_SUMMARY_ERROR', traceId });
   }
 });
 
@@ -48,15 +56,15 @@ router.get('/accounting-status', async (req: Request, res: Response) => {
     if (startDate) query = query.where('orderTime', '>=', startDate);
     if (endDate) query = query.where('orderTime', '<=', endDate);
     const snap = await query.limit(limit).get();
-    const orders = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+    const orders = snap.docs.map((d) => ({ id: d.id, ...(d.data() as OrderDoc) }));
 
     const statusTotals: Record<string, { amount: number; count: number }> = {};
 
     for (const o of orders) {
-      const refundAccount = o.refundAccount || {};
+      const refundAccount = (o as OrderDoc).refundAccount || {};
       // Prefer embedded field if present
-      const accountingStatus: AccountStatus = refundAccount.accountStatus || deriveAccountStatus(refundAccount);
-      const total = Number(o?.buyerRefundAmount || 0);
+      const accountingStatus: AccountStatus = (refundAccount as any).accountStatus || deriveAccountStatus(refundAccount);
+      const total = Number((o as OrderDoc)?.buyerRefundAmount || 0);
       if (!statusTotals[accountingStatus]) statusTotals[accountingStatus] = { amount: 0, count: 0 };
       statusTotals[accountingStatus].amount += total;
       statusTotals[accountingStatus].count += 1;
@@ -64,7 +72,14 @@ router.get('/accounting-status', async (req: Request, res: Response) => {
 
     res.json({ success: true, statusTotals, count: orders.length });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to build accounting status' });
+    const traceId = `REP_ACC_${Date.now()}`;
+    console.error('REPORTS_ACCOUNTING_STATUS_ERROR', {
+      traceId,
+      query: req.query,
+      errorMessage: (e as Error).message,
+      stack: (e as Error).stack,
+    });
+    res.status(500).json({ success: false, error: 'Failed to build accounting status', code: 'REPORTS_ACCOUNTING_STATUS_ERROR', traceId });
   }
 });
 
@@ -79,12 +94,12 @@ router.get('/staff-errors', async (req: Request, res: Response) => {
     if (endDate) query = query.where('createdAt', '<=', endDate);
     const snap = await query.limit(limit).get();
 
-    const recs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+    const recs = snap.docs.map((d) => ({ id: d.id, ...(d.data() as RefundReconciliationDoc) }));
     const byStaff: Record<string, { count: number; totalVariance: number }> = {};
 
     for (const r of recs) {
-      const owner = r.createdBy || 'UNKNOWN';
-      const variance = Number(r.expectedValue || 0) - Number(r.actualValue || 0);
+      const owner = (r as RefundReconciliationDoc).reconciledBy || 'UNKNOWN';
+      const variance = Number((r as RefundReconciliationDoc).expectedValue || 0) - Number((r as RefundReconciliationDoc).actualValue || 0);
       if (!byStaff[owner]) byStaff[owner] = { count: 0, totalVariance: 0 };
       byStaff[owner].count += 1;
       byStaff[owner].totalVariance += variance;
@@ -92,7 +107,14 @@ router.get('/staff-errors', async (req: Request, res: Response) => {
 
     res.json({ success: true, byStaff, count: recs.length });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to build staff errors' });
+    const traceId = `REP_STAFF_${Date.now()}`;
+    console.error('REPORTS_STAFF_ERRORS_ERROR', {
+      traceId,
+      query: req.query,
+      errorMessage: (e as Error).message,
+      stack: (e as Error).stack,
+    });
+    res.status(500).json({ success: false, error: 'Failed to build staff errors', code: 'REPORTS_STAFF_ERRORS_ERROR', traceId });
   }
 });
 
@@ -106,17 +128,35 @@ router.get('/defective-products', async (req: Request, res: Response) => {
     if (startDate) query = query.where('refundDate', '>=', startDate);
     if (endDate) query = query.where('refundDate', '<=', endDate);
     const snap = await query.limit(limit).get();
-    const details = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+    const details = snap.docs.map((d) => ({ id: d.id, ...(d.data() as RefundDetailDoc) }));
 
-    const items = details.flatMap((d) => (Array.isArray(d.defectiveItems) ? d.defectiveItems : []).map((x: any) => ({
-      orderId: d.orderId,
-      refundDetailId: d.id,
-      ...x,
-    })));
+    const items = (details as Array<RefundDetailDoc & { id: string }>).flatMap((d) => {
+      const defective = Array.isArray(d.defectiveItems) ? d.defectiveItems : [];
+      return defective.map((x) => ({
+        orderId: d.orderId,
+        refundDetailId: (d as any).id as string,
+        skuName: (x as any).skuName,
+        quantity: (x as any).quantity,
+        unitPrice: (x as any).unitPrice,
+        defectDescription: (x as any).defectDescription,
+        evidenceUrls: (x as any).evidenceUrls,
+        reportedBy: (x as any).reportedBy,
+        reportedDate: (x as any).reportedDate,
+        verifiedBy: (x as any).verifiedBy,
+        verifiedDate: (x as any).verifiedDate,
+      }));
+    });
 
     res.json({ success: true, count: items.length, items });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to build defective products report' });
+    const traceId = `REP_DEF_${Date.now()}`;
+    console.error('REPORTS_DEFECTIVE_PRODUCTS_ERROR', {
+      traceId,
+      query: req.query,
+      errorMessage: (e as Error).message,
+      stack: (e as Error).stack,
+    });
+    res.status(500).json({ success: false, error: 'Failed to build defective products report', code: 'REPORTS_DEFECTIVE_PRODUCTS_ERROR', traceId });
   }
 });
 
@@ -130,14 +170,21 @@ router.get('/financial-impact', async (req: Request, res: Response) => {
     if (startDate) query = query.where('orderTime', '>=', startDate);
     if (endDate) query = query.where('orderTime', '<=', endDate);
     const ordersSnap = await query.limit(limit).get();
-    const orders = ordersSnap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+    const orders = ordersSnap.docs.map((d) => ({ id: d.id, ...(d.data() as OrderDoc) }));
 
-    const totalRefunds = orders.reduce((s, o) => s + Number(o?.buyerRefundAmount || 0), 0);
-    const totalAccounted = orders.reduce((s, o) => s + Number(o?.refundAccount?.accountedRefundAmount || 0), 0);
+    const totalRefunds = (orders as OrderDoc[]).reduce((s, o) => s + Number(o?.buyerRefundAmount || 0), 0);
+    const totalAccounted = (orders as OrderDoc[]).reduce((s, o) => s + Number(o?.refundAccount?.accountedRefundAmount || 0), 0);
 
     res.json({ success: true, totals: { totalRefunds, totalAccounted, recoveryRate: totalRefunds ? totalAccounted / totalRefunds : 0 }, count: orders.length });
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to build financial impact report' });
+    const traceId = `REP_FIN_${Date.now()}`;
+    console.error('REPORTS_FINANCIAL_IMPACT_ERROR', {
+      traceId,
+      query: req.query,
+      errorMessage: (e as Error).message,
+      stack: (e as Error).stack,
+    });
+    res.status(500).json({ success: false, error: 'Failed to build financial impact report', code: 'REPORTS_FINANCIAL_IMPACT_ERROR', traceId });
   }
 });
 

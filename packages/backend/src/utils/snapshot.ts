@@ -1,5 +1,6 @@
-import { db } from '../config/firebase';
-import { AccountingStatus, AccountStatus, RefundDetail, RefundReconciliation, ItemCondition } from '@packages/shared';
+import { db, admin } from '../config/firebase';
+import { AccountingStatus, AccountStatus, ItemCondition } from '@packages/shared';
+import { RefundDetailDoc, RefundReconciliationDoc, ReturnTrackingDoc } from '../types/firestore';
 
 // Configurable epsilon for accounting validations
 export const ACCOUNTING_EPSILON: number = (() => {
@@ -8,17 +9,53 @@ export const ACCOUNTING_EPSILON: number = (() => {
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0.01;
 })();
 
-async function computeOrderRefundSnapshot(orderId: string): Promise<{ accountedRefundAmount: number; accountStatus: AccountStatus }> {
+// Optional in-memory cache for snapshots to reduce recomputation hot paths
+const SNAPSHOT_CACHE_TTL_MS: number = (() => {
+  const raw = process.env.SNAPSHOT_CACHE_TTL_MS;
+  const parsed = raw ? Number(raw) : 5 * 60 * 1000; // default 5 minutes
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5 * 60 * 1000;
+})();
+
+type SnapshotCacheValue = { accountedRefundAmount: number; accountStatus: AccountStatus; cachedAt: number };
+const snapshotCache = new Map<string, SnapshotCacheValue>();
+
+function isCacheValid(entry?: SnapshotCacheValue): boolean {
+  if (!entry) return false;
+  if (SNAPSHOT_CACHE_TTL_MS === 0) return false;
+  return Date.now() - entry.cachedAt <= SNAPSHOT_CACHE_TTL_MS;
+}
+
+function toMillis(ts?: Date | FirebaseFirestore.Timestamp | null): number {
+  if (!ts) return 0;
+  if (ts instanceof Date) return ts.getTime();
+  if (ts instanceof admin.firestore.Timestamp) return ts.toMillis();
+  return 0;
+}
+
+async function computeOrderRefundSnapshot(
+  orderId: string,
+  options: { useCache?: boolean } = { useCache: true }
+): Promise<{ accountedRefundAmount: number; accountStatus: AccountStatus }> {
+  if (options.useCache) {
+    const cached = snapshotCache.get(orderId);
+    if (isCacheValid(cached)) {
+      return { accountedRefundAmount: cached!.accountedRefundAmount, accountStatus: cached!.accountStatus };
+    }
+  }
+
   const refundSnap = await db
     .collection('refundDetails')
     .where('orderId', '==', orderId)
     .get();
 
-  const refundDetails: (Partial<RefundDetail> & { id: string })[] = refundSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+  const refundDetails: (Partial<RefundDetailDoc> & { id: string })[] = refundSnap.docs.map((d) => ({
+    id: d.id,
+    ...(d.data() as RefundDetailDoc),
+  }));
 
   // Gather reconciliations for these refund details
   const detailIds = refundDetails.map((r) => r.id);
-  const detailIdToRecon: Record<string, RefundReconciliation[]> = {};
+  const detailIdToRecon: Record<string, RefundReconciliationDoc[]> = {};
   if (detailIds.length > 0) {
     const chunks: string[][] = [];
     for (let i = 0; i < detailIds.length; i += 10) chunks.push(detailIds.slice(i, i + 10));
@@ -29,8 +66,9 @@ async function computeOrderRefundSnapshot(orderId: string): Promise<{ accountedR
     const snaps = await Promise.all(snapPromises);
     for (const recSnap of snaps) {
       for (const d of recSnap.docs) {
-        const data = { id: d.id, ...(d.data() as any) } as RefundReconciliation;
-        const key = (data as any).refundDetailId as string;
+        const data = d.data() as RefundReconciliationDoc;
+        const key = data.refundDetailId;
+        if (!key) continue;
         if (!detailIdToRecon[key]) detailIdToRecon[key] = [];
         detailIdToRecon[key].push(data);
       }
@@ -39,20 +77,16 @@ async function computeOrderRefundSnapshot(orderId: string): Promise<{ accountedR
 
   const accountedRefundAmount = refundDetails.reduce((sum, rd) => {
     try {
-      const recs = detailIdToRecon[rd.id] || [];
+      const recs: RefundReconciliationDoc[] = detailIdToRecon[rd.id] || [];
       let actualValue = 0;
       if (recs.length > 0) {
-        recs.sort((a: any, b: any) => {
-          const aTime = (a.updatedAt as any)?.toDate ? (a.updatedAt as any).toDate().getTime() : new Date((a as any).updatedAt).getTime();
-          const bTime = (b.updatedAt as any)?.toDate ? (b.updatedAt as any).toDate().getTime() : new Date((b as any).updatedAt).getTime();
-          return bTime - aTime;
-        });
-        actualValue = Number((recs[0] as any)?.actualValue || 0);
+        recs.sort((a, b) => toMillis(b.updatedAt) - toMillis(a.updatedAt));
+        actualValue = Number(recs[0]?.actualValue || 0);
       } else if (Array.isArray(rd.returnTrackings)) {
-        for (const rt of rd.returnTrackings as any[]) {
-          if (!Array.isArray((rt as any).returnItems)) continue;
-          for (const item of (rt as any).returnItems as any[]) {
-            const condition = (item?.condition as ItemCondition) ?? (item?.condition === 0 ? ItemCondition.GOOD : undefined);
+        for (const rt of rd.returnTrackings as ReturnTrackingDoc[]) {
+          if (!Array.isArray(rt.returnItems)) continue;
+          for (const item of rt.returnItems) {
+            const condition = (item?.condition as ItemCondition) ?? undefined;
             if (condition === ItemCondition.GOOD) {
               actualValue += Number(item.quantity || 0) * Number(item.unitPrice || 0);
             }
@@ -61,7 +95,17 @@ async function computeOrderRefundSnapshot(orderId: string): Promise<{ accountedR
       }
       return sum + (isNaN(actualValue) ? 0 : actualValue);
     } catch (err) {
-      console.warn('SNAPSHOT_REDUCE_ERROR', { orderId, refundDetailId: rd.id, error: (err as Error).message });
+      const reconArr = detailIdToRecon[rd.id] || [];
+      console.warn('SNAPSHOT_REDUCE_ERROR', {
+        orderId,
+        refundDetailId: rd.id,
+        hasReturnTrackings: Array.isArray(rd.returnTrackings),
+        returnTrackingsCount: Array.isArray(rd.returnTrackings) ? rd.returnTrackings!.length : 0,
+        reconCount: reconArr.length,
+        sampleRecon: reconArr.length > 0 ? { updatedAt: reconArr[0].updatedAt, actualValue: reconArr[0].actualValue } : undefined,
+        errorMessage: (err as Error).message,
+        stack: (err as Error).stack,
+      });
       return sum;
     }
   }, 0);
@@ -73,28 +117,39 @@ async function computeOrderRefundSnapshot(orderId: string): Promise<{ accountedR
     accountStatus = allFully ? AccountStatus.FULLY_ACCOUNTED : AccountStatus.PARTIALLY_ACCOUNTED;
   }
 
-  return { accountedRefundAmount, accountStatus };
+  const result = { accountedRefundAmount, accountStatus };
+  snapshotCache.set(orderId, { ...result, cachedAt: Date.now() });
+  return result;
 }
 
 export async function recomputeAndWriteOrderRefundSnapshot(orderId: string): Promise<void> {
-  const { accountedRefundAmount, accountStatus } = await computeOrderRefundSnapshot(orderId);
+  const { accountedRefundAmount, accountStatus } = await computeOrderRefundSnapshot(orderId, { useCache: false });
   await db
     .collection('orders')
     .doc(orderId)
     .set({ refundAccount: { accountedRefundAmount, accountStatus } }, { merge: true });
+  // Update cache post-write for subsequent reads
+  snapshotCache.set(orderId, { accountedRefundAmount, accountStatus, cachedAt: Date.now() });
 }
 
 // Computes the sum of refundAmount across all RefundDetails for a given order
 export async function getRefundDetailsTotalAmount(orderId: string): Promise<number> {
   const snap = await db.collection('refundDetails').where('orderId', '==', orderId).get();
-  return snap.docs.reduce((sum, d) => sum + Number(((d.data() as any)?.refundAmount) || 0), 0);
+  return snap.docs.reduce((sum, d) => {
+    const data = d.data() as RefundDetailDoc;
+    const amt = Number(data?.refundAmount ?? 0);
+    return sum + (Number.isFinite(amt) ? amt : 0);
+  }, 0);
 }
 
 // Validates that the sum of RefundDetails equals the Order.buyerRefundAmount (within epsilon)
-export async function validateRefundDetailsSumEqualsOrder(orderId: string, epsilon: number = ACCOUNTING_EPSILON): Promise<{ actualTotal: number; expectedTotal: number }> {
+export async function validateRefundDetailsSumEqualsOrder(
+  orderId: string,
+  epsilon: number = ACCOUNTING_EPSILON
+): Promise<{ actualTotal: number; expectedTotal: number }> {
   const orderDoc = await db.collection('orders').doc(orderId).get();
   if (!orderDoc.exists) throw new Error(`Order ${orderId} not found`);
-  const order = orderDoc.data() as any;
+  const order = orderDoc.data() as { buyerRefundAmount?: number };
   const expectedTotal = Number(order?.buyerRefundAmount || 0);
   const actualTotal = await getRefundDetailsTotalAmount(orderId);
   if (Math.abs(actualTotal - expectedTotal) > epsilon) {

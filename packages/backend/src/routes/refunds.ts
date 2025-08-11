@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
-import { db, admin } from '../config/firebase';
-import { AccountingStatus, RefundDetail, RefundStatus, RefundType } from '@packages/shared';
+import { db } from '../config/firebase';
+import { AccountingStatus, RefundStatus, RefundType } from '@packages/shared';
 import { z, ZodIssue } from 'zod';
 import { recomputeAndWriteOrderRefundSnapshot } from '../utils/snapshot';
+import { RefundDetailDoc } from '../types/firestore';
 
 const router = Router();
 
@@ -23,14 +24,14 @@ router.get('/', async (req: Request, res: Response) => {
       const cursorDoc = await db.collection('refundDetails').doc(safeCursor).get();
       if (!cursorDoc.exists) return res.status(400).json({ success: false, error: 'Invalid cursor', code: 'INVALID_CURSOR' });
       const snap = await baseQuery.startAfter(cursorDoc).limit(limit).get();
-      const refunds = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const refunds = snap.docs.map((d) => ({ id: d.id, ...(d.data() as RefundDetailDoc) }));
       const nextCursor = refunds.length === limit ? snap.docs[snap.docs.length - 1].id : null;
       return res.json({ success: true, count: refunds.length, refunds, page, limit, nextCursor });
     }
 
     if (page === 1) {
       const snap = await baseQuery.limit(limit).get();
-      const refunds = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const refunds = snap.docs.map((d) => ({ id: d.id, ...(d.data() as RefundDetailDoc) }));
       const nextCursor = refunds.length === limit ? snap.docs[snap.docs.length - 1].id : null;
       return res.json({ success: true, count: refunds.length, refunds, page, limit, nextCursor });
     }
@@ -48,7 +49,7 @@ router.get('/:id', async (req: Request, res: Response) => {
     if (!id) return res.status(400).json({ success: false, error: 'Invalid id', code: 'INVALID_ID' });
     const doc = await db.collection('refundDetails').doc(id).get();
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
-    res.json({ success: true, refund: { id: doc.id, ...doc.data() } });
+    res.json({ success: true, refund: { id: doc.id, ...(doc.data() as RefundDetailDoc) } });
   } catch (e) {
     console.error('REFUND_GET_ERROR', e);
     res.status(500).json({ success: false, error: 'Failed to get refund', code: 'REFUND_GET_ERROR' });
@@ -67,7 +68,7 @@ router.put('/:id/status', async (req: Request, res: Response) => {
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
     const now = new Date();
     await ref.update({ status, updatedAt: now });
-    const data = doc.data() as any;
+    const data = doc.data() as RefundDetailDoc | undefined;
     if (data?.orderId) await recomputeAndWriteOrderRefundSnapshot(data.orderId);
     res.json({ success: true });
   } catch (e: any) {
@@ -103,7 +104,7 @@ router.post('/initiate', async (req: Request, res: Response) => {
     const data = initiateSchema.parse(req.body);
 
     const now = new Date();
-    const payload: any = {
+    const payload = {
       ...data,
       status: data.status || RefundStatus.INITIATED,
       refundType: data.refundType || RefundType.OTHERS,
@@ -117,9 +118,9 @@ router.post('/initiate', async (req: Request, res: Response) => {
     const ref = await db.collection('refundDetails').add(payload);
     const doc = await ref.get();
 
-    await recomputeAndWriteOrderRefundSnapshot(payload.orderId);
+    await recomputeAndWriteOrderRefundSnapshot(data.orderId);
 
-    res.status(201).json({ success: true, refund: { id: doc.id, ...doc.data() } });
+    res.status(201).json({ success: true, refund: { id: doc.id, ...(doc.data() as RefundDetailDoc) } });
   } catch (e: any) {
     if (e instanceof z.ZodError) return res.status(400).json({ success: false, error: e.errors.map((x: ZodIssue) => x.message).join('; '), code: 'VALIDATION_ERROR' });
     console.error('REFUND_INITIATE_ERROR', e);
@@ -158,7 +159,7 @@ router.post('/split', async (req: Request, res: Response) => {
 
     const originalDoc = await db.collection('refundDetails').doc(refundId).get();
     if (!originalDoc.exists) return res.status(404).json({ success: false, error: 'Original refund not found', code: 'REFUND_NOT_FOUND' });
-    const original = { id: originalDoc.id, ...originalDoc.data() } as any;
+    const originalData = originalDoc.data() as RefundDetailDoc;
 
     const batch = db.batch();
     const col = db.collection('refundDetails');
@@ -169,13 +170,12 @@ router.post('/split', async (req: Request, res: Response) => {
 
     for (const split of splits) {
       const ref = col.doc();
-      const payload: any = {
-        ...original,
+      const payload = {
+        ...originalData,
         ...split,
         createdAt: now,
         updatedAt: now,
-      };
-      delete payload.id;
+      } as Partial<RefundDetailDoc> & { orderId: string; refundAmount: number };
       // Ensure required fields present post-merge
       if (!payload.orderId || typeof payload.refundAmount !== 'number') {
         const missing: string[] = [];
@@ -183,13 +183,16 @@ router.post('/split', async (req: Request, res: Response) => {
         if (typeof payload.refundAmount !== 'number') missing.push('refundAmount');
         throw new Error(`Invalid split payload after merge: missing ${missing.join(', ')}`);
       }
-      batch.set(ref, payload);
+      // Remove fields that should not be copied verbatim
+      const { /* eslint-disable @typescript-eslint/no-unused-vars */ orderId, refundAmount, refundType, status, accountingStatus, createdBy, createdAt, updatedAt, ...rest } = originalData as any;
+      void rest; // not used, just to satisfy linter
+      batch.set(ref, payload as RefundDetailDoc);
       createdIds.push(ref.id);
     }
 
     await batch.commit();
 
-    await recomputeAndWriteOrderRefundSnapshot(original.orderId);
+    await recomputeAndWriteOrderRefundSnapshot(originalData.orderId);
 
     res.json({ success: true, createdIds });
   } catch (e: any) {
@@ -238,8 +241,8 @@ router.put('/:id/type-data', async (req: Request, res: Response) => {
 
     await docRef.update({ ...updates, updatedAt: new Date() });
 
-    const data = doc.data() as any;
-    await recomputeAndWriteOrderRefundSnapshot(data.orderId);
+    const data = doc.data() as RefundDetailDoc | undefined;
+    if (data?.orderId) await recomputeAndWriteOrderRefundSnapshot(data.orderId);
 
     res.json({ success: true });
   } catch (e: any) {
@@ -307,13 +310,33 @@ router.post('/bulk-update', async (req: Request, res: Response) => {
       }
     };
 
+    // Build refs and fetch snapshots in chunks (parallel) to avoid N sequential reads
+    const idToRef = new Map<string, FirebaseFirestore.DocumentReference>();
     for (const payload of updates) {
       const id = String(payload.id).trim();
       if (!id) continue;
-      const ref = col.doc(id);
-      const doc = await ref.get();
-      if (!doc.exists) continue;
-      const data = doc.data() as any;
+      idToRef.set(id, col.doc(id));
+    }
+
+    const ids = Array.from(idToRef.keys());
+    const CHUNK = 100;
+    const idToSnapshot = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunkIds = ids.slice(i, i + CHUNK);
+      const refs = chunkIds.map((id) => idToRef.get(id)!);
+      const snaps = await Promise.all(refs.map((r) => r.get()));
+      snaps.forEach((snap) => {
+        idToSnapshot.set(snap.id, snap);
+      });
+    }
+
+    for (const payload of updates) {
+      const id = String(payload.id).trim();
+      if (!id) continue;
+      const ref = idToRef.get(id)!;
+      const doc = idToSnapshot.get(id);
+      if (!doc || !doc.exists) continue;
+      const data = doc.data() as RefundDetailDoc | undefined;
       if (data?.orderId) affectedOrderIds.add(data.orderId);
       batch.update(ref, { ...payload.changes, updatedAt: now });
       opsInBatch++;
@@ -349,9 +372,9 @@ router.delete('/:id', async (req: Request, res: Response) => {
     const doc = await ref.get();
     if (!doc.exists) return res.status(404).json({ success: false, error: 'Not found', code: 'REFUND_NOT_FOUND' });
 
-    const data = doc.data() as any;
+    const data = doc.data() as RefundDetailDoc | undefined;
     await ref.delete();
-    await recomputeAndWriteOrderRefundSnapshot(data.orderId);
+    if (data?.orderId) await recomputeAndWriteOrderRefundSnapshot(data.orderId);
 
     res.json({ success: true });
   } catch (e) {
